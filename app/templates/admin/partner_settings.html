@@ -3,7 +3,6 @@
 {% block title %}{{ partner.name }} — настройки{% endblock %}
 {% block content %}
 {% include "admin/_partner_head.html" %}
-{% if db_error %}<div class="flash error">Нет связи с БД Remnashop: {{ db_error }}</div>{% endif %}
 
 {{ balance_card(balance, False) }}
 
@@ -17,7 +16,7 @@
       </label>
       <label>Комментарий<input name="note" maxlength="255" placeholder="напр. продлено в боте"></label>
       <button class="btn primary">Записать выдачу</button>
-      <p class="muted sm">Сначала начислите дни партнёру в боте Remnashop{% if partner.telegram_id %} (Telegram ID {{ partner.telegram_id }}){% endif %}, затем запишите выдачу здесь. Отрицательное число — корректировка.</p>
+      <p class="muted sm">Сначала начислите дни партнёру в боте{% if partner.telegram_id %} (Telegram ID {{ partner.telegram_id }}){% endif %}, затем запишите выдачу здесь. Отрицательное число — корректировка.</p>
     </form>
   </section>
 
@@ -50,12 +49,12 @@
   <p class="muted sm">Пользователи, пришедшие через эти источники, считаются приведёнными партнёром. Источник может принадлежать только одному партнёру.</p>
   <div class="table-wrap">
   <table class="table">
-    <thead><tr><th>Тип</th><th>Источник</th><th>ID в Remnashop</th><th>Добавлен</th><th></th></tr></thead>
+    <thead><tr><th>Тип</th><th>Источник</th><th>Значение</th><th>Добавлен</th><th></th></tr></thead>
     <tbody>
     {% for s in partner.sources %}
       <tr>
-        <td><span class="badge plain">{{ 'Реферальная ссылка' if s.kind == 'referrer' else 'Рекламная ссылка' }}</span></td>
-        <td>{{ s.label }}</td><td>{{ s.ref_id }}</td><td>{{ s.created_at|date }}</td>
+        <td><span class="badge plain">{{ 'Реферальная ссылка' if s.kind == 'referrer' else 'Источник / рекл. ссылка' }}</span></td>
+        <td>{{ s.label }}</td><td><code>{{ s.ref }}</code></td><td>{{ s.created_at|date }}</td>
         <td class="r">
           <form method="post" action="/admin/partners/{{ partner.id }}/sources/{{ s.id }}/delete" data-confirm="Отвязать источник?">
             <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn ghost sm danger">Отвязать</button>
@@ -73,23 +72,23 @@
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input type="hidden" name="kind" value="referrer">
       <label>Реферер (пользователь бота, чья реф. ссылка)
-        <input name="query" placeholder="Telegram ID, @username или реф. код" required>
+        <input name="query" placeholder="id в боте, Telegram ID или @username" required>
       </label>
       <button class="btn">Привязать реферера</button>
     </form>
     <form method="post" action="/admin/partners/{{ partner.id }}/sources" class="form">
       <input type="hidden" name="csrf" value="{{ csrf }}">
-      <input type="hidden" name="kind" value="ad_link">
-      <label>Рекламная ссылка Remnashop
-        <select name="ad_link_id" required>
-          <option value="">— выберите —</option>
-          {% for a in ad_links %}
-            {% set owner = taken_links.get(a.id) %}
-            <option value="{{ a.id }}" {{ 'disabled' if owner }}>{{ a.name }} ({{ a.code }}) · {{ a.users }} польз.{{ ' · занята' if owner }}{{ ' · неактивна' if not a.is_active }}</option>
+      <input type="hidden" name="kind" value="source">
+      <label>Источник (рекламная ссылка, поле <code>source</code> в событии регистрации)
+        <input name="source_name" list="source-list" maxlength="128" placeholder="название ссылки" required>
+        <datalist id="source-list">
+          {% for a in source_list if not taken_sources.get(a.name) %}
+            <option value="{{ a.name }}">{{ a.users }} польз.</option>
           {% endfor %}
-        </select>
+        </datalist>
       </label>
-      <button class="btn">Привязать ссылку</button>
+      <button class="btn">Привязать источник</button>
+      <p class="muted sm">Можно привязать заранее — пользователи начнут учитываться, как только бот пришлёт регистрации с этим источником.</p>
     </form>
   </div>
 </section>

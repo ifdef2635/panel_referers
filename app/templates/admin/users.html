@@ -2,7 +2,7 @@
 {% from "macros.html" import users_table, users_filters, pager with context %}
 {% block title %}Пользователи{% endblock %}
 {% block content %}
-<div class="page-head"><h1>Все пользователи Remnashop</h1></div>
+<div class="page-head"><h1>Все пользователи бота</h1></div>
 {{ users_filters("/admin/users", flt, search, total) }}
 {{ users_table(rows, True, True, True) }}
 {{ pager(page, pages, "/admin/users") }}

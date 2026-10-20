@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "macros.html" import period_picker, kpis, chart_block, payments_table, money_list with context %}
+{% from "macros.html" import period_picker, kpis, chart_block, payments_table, money_list, geo_platforms with context %}
 {% block title %}Обзор — {{ app_name }}{% endblock %}
 {% block content %}
 <div class="page-head"><h1>Общая статистика</h1><span class="muted">{{ period.label }}</span></div>
@@ -77,6 +77,8 @@
     </table>
   </section>
 </div>
+
+{{ geo_platforms(geo, platforms) }}
 
 <section class="card">
   <h3>Последние оплаты</h3>

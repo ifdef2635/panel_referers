@@ -1,20 +1,19 @@
 import logging
 from contextlib import asynccontextmanager
 
-import psycopg
-import psycopg_pool
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import OperationalError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.sessions import SessionMiddleware
 
-from . import remnashop as rs
 from .config import get_settings
-from .db import SessionLocal, init_db
+from .db import SessionLocal, engine, init_db
 from .models import ROLE_ADMIN, Account
+from . import ingest
 from .routes import admin, auth, partner
 from .security import hash_password
 from .web import BASE_DIR, LoginRequired, render
@@ -46,7 +45,6 @@ async def lifespan(_: FastAPI):
     init_db()
     bootstrap_admin()
     yield
-    rs.close_pool()
 
 
 settings = get_settings()
@@ -80,6 +78,7 @@ app.add_middleware(
 )
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
+app.include_router(ingest.router)
 app.include_router(auth.router)
 app.include_router(partner.router)
 app.include_router(admin.router)
@@ -87,8 +86,12 @@ app.include_router(admin.router)
 
 @app.get("/healthz")
 def healthz():
-    ok = rs.ping()
-    return JSONResponse({"panel": "ok", "remnashop_db": "ok" if ok else "error"}, 200 if ok else 503)
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except OperationalError:
+        return JSONResponse({"status": "error", "db": "unavailable"}, 503)
+    return JSONResponse({"status": "ok"})
 
 
 @app.exception_handler(LoginRequired)
@@ -113,16 +116,15 @@ async def _validation_error(request: Request, exc: RequestValidationError):
     return resp
 
 
-@app.exception_handler(psycopg.Error)
-@app.exception_handler(psycopg_pool.PoolTimeout)
-async def _remnashop_error(request: Request, exc: Exception):
-    log.exception("Remnashop DB error")
+@app.exception_handler(OperationalError)
+async def _db_error(request: Request, exc: Exception):
+    log.exception("Database error")
     resp = render(
         request,
         "error.html",
         None,
         code=503,
-        message="Нет связи с базой Remnashop. Проверьте REMNASHOP_DSN и что контейнер БД запущен.",
+        message="Нет связи с базой данных панели. Проверьте DATABASE_URL и что PostgreSQL запущен.",
     )
     resp.status_code = 503
     return resp

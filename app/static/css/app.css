@@ -184,3 +184,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
   .grid2 { grid-template-columns: 1fr; }
   .kpi-value { font-size: 22px; }
 }
+
+.list { margin: 0 0 12px; padding-left: 20px; }
+.list li { margin: 4px 0; }
+pre.code {
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; overflow-x: auto; white-space: pre; font-size: 12px; margin: 6px 0;
+}
+.big.sm-big { font-size: 15px; }

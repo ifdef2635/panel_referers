@@ -132,8 +132,8 @@
       <td>{{ r.created_at|dt }}</td>
       {% if show_via %}<td>
         <span class="badge plain">{{ VIA.get(r.via, r.via) }}</span>
-        {% if show_referrer and r.referrer_id %}<div class="muted sm">от {{ r.referrer_name or ('@' ~ r.referrer_username) }}</div>{% endif %}
-        {% if r.ad_link_name and (show_referrer or r.via == 'ad_link') %}<div class="muted sm">{{ r.ad_link_name }}</div>{% endif %}
+        {% if show_referrer and r.referrer_id %}<div class="muted sm">от {{ r.referrer_name or (('@' ~ r.referrer_username) if r.referrer_username else ('id ' ~ r.referrer_id)) }}</div>{% endif %}
+        {% if r.source and (show_referrer or r.via == 'ad_link') %}<div class="muted sm">{{ r.source }}</div>{% endif %}
       </td>{% endif %}
       <td>{{ sub_badge(r) }}</td>
       <td>{{ r.first_paid_at|dt if r.first_paid_at else '—' }}</td>
@@ -182,5 +182,32 @@
   {% endfor %}
   </tbody>
 </table>
+</div>
+{% endmacro %}
+
+{% macro geo_platforms(geo, platforms) %}
+<div class="grid2">
+  <section class="card">
+    <h3>География <span class="muted sm">регистрации за период</span></h3>
+    <table class="table">
+      <thead><tr><th>Страна</th><th class="r">Регистрации</th><th class="r">Из них купили</th></tr></thead>
+      <tbody>
+      {% for g in geo %}
+        <tr><td>{{ 'не указана' if g.country == '—' else g.country }}</td><td class="r">{{ g.registrations|num }}</td><td class="r">{{ g.buyers|num }}</td></tr>
+      {% else %}<tr><td colspan="3" class="empty">Нет данных о странах</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </section>
+  <section class="card">
+    <h3>Платформы <span class="muted sm">всё время</span></h3>
+    <table class="table">
+      <thead><tr><th>Платформа</th><th class="r">Пользователей</th><th class="r">Устройств</th></tr></thead>
+      <tbody>
+      {% for d in platforms %}
+        <tr><td>{{ d.platform }}</td><td class="r">{{ d.users|num }}</td><td class="r">{{ d.devices|num }}</td></tr>
+      {% else %}<tr><td colspan="3" class="empty">Нет данных об устройствах</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </section>
 </div>
 {% endmacro %}

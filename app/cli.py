@@ -4,7 +4,7 @@
     python -m app.cli set-password LOGIN [--password PASS]
     python -m app.cli list
     python -m app.cli has-admin   (exit code 0 if an admin exists)
-    python -m app.cli check-db
+    python -m app.cli issue-token   (new ingest token for the bot; the old one stops working)
 """
 
 import argparse
@@ -13,8 +13,8 @@ import sys
 
 from sqlalchemy import select
 
-from . import remnashop as rs
 from .db import SessionLocal, init_db
+from .ingest import issue_token
 from .models import ROLE_ADMIN, Account
 from .security import hash_password
 
@@ -41,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
         sp.add_argument("--password")
     sub.add_parser("list")
     sub.add_parser("has-admin")
-    sub.add_parser("check-db")
+    sub.add_parser("issue-token")
     args = parser.parse_args(argv)
 
     init_db()
@@ -73,18 +73,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{a.id:>4}  {a.role:<8} {a.login:<24} {'on ' if a.is_active else 'off'}  {a.name}")
         elif args.cmd == "has-admin":
             return 0 if db.scalar(select(Account).where(Account.role == ROLE_ADMIN)) else 1
-        elif args.cmd == "check-db":
-            try:
-                row = rs.fetch_one(
-                    "SELECT (SELECT COUNT(*) FROM users) AS users,"
-                    " (SELECT COUNT(*) FROM referrals) AS referrals,"
-                    " (SELECT COUNT(*) FROM transactions) AS transactions"
-                )
-            except Exception as exc:
-                print(f"Ошибка подключения к Remnashop: {exc}", file=sys.stderr)
-                return 1
-            print(f"Remnashop OK: {row}")
-    rs.close_pool()
+        elif args.cmd == "issue-token":
+            print(issue_token(db))
     return 0
 
 

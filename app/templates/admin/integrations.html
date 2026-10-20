@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Интеграции{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Интеграции</h1></div>
+
+<section class="card">
+  <h3>1. Модуль для бота</h3>
+  <p>Бот отправляет события в панель POST-запросами, а панель складывает их в свою базу и считает по ним метрики. Читать базу бота панели не нужно.</p>
+  <ul class="list">
+    <li><a href="/admin/integrations/files/events_api.md">events_api.md</a> — описание API: формат событий, поля, ответы, ретраи.</li>
+    <li><a href="/admin/integrations/files/kago_emitter.py">kago_emitter.py</a> — модуль для кода бота: неблокирующая очередь, отправка пачками, повторы.</li>
+    <li><a href="/admin/integrations/files/remnashop_sync.py">remnashop_sync.py</a> — выгрузка истории из БД Remnashop (backfill). С флагом <code>--watch</code> досылает изменения каждые N секунд, поэтому может работать и без правок в коде бота.</li>
+  </ul>
+  <p class="muted sm">Для кабинетов партнёров в событии <code>user.registered</code> нужны поля <code>referrer_id</code> (кто пригласил) и/или <code>source</code> (рекламная ссылка). Поля <code>name</code>, <code>username</code> и <code>telegram_id</code> нужны, чтобы находить пользователей в панели.</p>
+</section>
+
+<section class="card">
+  <h3>2. Приём событий от бота</h3>
+  <dl class="dl">
+    <dt>Адрес</dt><dd><code>POST {{ ingest_url }}</code></dd>
+    <dt>Авторизация</dt><dd><code>Authorization: Bearer &lt;токен&gt;</code></dd>
+    <dt>Токен</dt>
+    <dd>
+      {% if token %}
+        <code>{{ token.hint }}</code> · выпущен {{ token.created_at|dt }} · последний запрос: {{ token.last_used_at|dt }}
+      {% else %}
+        <span class="badge off">не выпущен</span>
+      {% endif %}
+    </dd>
+  </dl>
+
+  {% if new_token %}
+    <div class="flash ok">
+      <div><b>Новый токен — скопируйте сейчас, больше он показан не будет:</b></div>
+      <pre class="code">{{ new_token }}</pre>
+      <div class="sm">Проверка:</div>
+      <pre class="code">curl -k -X POST {{ ingest_url }} \
+  -H "Authorization: Bearer {{ new_token }}" -H "Content-Type: application/json" \
+  -d '{"id":"test-1","type":"user.registered","ts":"2026-10-05T12:00:00+00:00","data":{"user_id":1,"country":"RU"}}'</pre>
+    </div>
+  {% endif %}
+
+  <form method="post" action="/admin/integrations/token" class="form"
+        {% if token %}data-confirm="Выпустить новый токен? Старый сразу перестанет работать."{% endif %}>
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <button class="btn primary">{{ 'Перевыпустить токен' if token else 'Выпустить токен' }}</button>
+    <p class="muted sm">Токен показывается один раз. Если он потерян, перевыпустите его: старый сразу перестанет работать.</p>
+  </form>
+
+  <hr>
+  <div class="balance-grid">
+    <div><div class="kpi-label">Принято событий</div><div class="big">{{ (stats.accepted or 0)|num }}</div></div>
+    <div><div class="kpi-label">За 24 часа</div><div class="big">{{ (stats.last_24h or 0)|num }}</div></div>
+    <div><div class="kpi-label">Последнее событие</div><div class="big sm-big">{{ stats.last_received_at|dt }}</div></div>
+    <div><div class="kpi-label">Неизвестных типов</div><div class="big">{{ (stats.ignored or 0)|num }}</div></div>
+  </div>
+  {% if stats.by_type %}
+  <table class="table">
+    <thead><tr><th>Тип</th><th class="r">Событий</th><th>Последнее</th></tr></thead>
+    <tbody>
+    {% for t in stats.by_type %}
+      <tr><td><code>{{ t.type }}</code></td><td class="r">{{ t.n|num }}</td><td>{{ t.last_at|dt }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</section>
+{% endblock %}

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
-from .. import remnashop as rs
+from .. import analytics as rs
 from ..db import get_db
 from ..models import Account
 from ..services import chart_payload, partner_scope, resolve_period, reward_balance
@@ -23,6 +23,8 @@ def partner_dashboard_context(db: Session, partner: Account, request: Request) -
         "chart": chart_payload(scope, period) if not scope.empty else None,
         "balance": reward_balance(db, partner),
         "recent": rs.recent_payments(scope, 15),
+        "geo": rs.geography(scope, period.start, period.end),
+        "platforms": rs.platforms(scope),
         "no_sources": scope.empty,
     }
 

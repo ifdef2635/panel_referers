@@ -1,17 +1,20 @@
 import re
 import secrets
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from .. import remnashop as rs
+from .. import analytics as rs
+from ..config import get_settings
 from ..db import get_db
+from ..ingest import active_token, issue_token
 from ..models import (
     ROLE_PARTNER,
-    SOURCE_AD_LINK,
+    SOURCE_AD,
     SOURCE_REFERRER,
     Account,
     PartnerSource,
@@ -96,6 +99,8 @@ def dashboard(request: Request, me: Account = Depends(require_admin), db: Sessio
         purchase_types=rs.breakdown(scope, period.start, period.end, "purchase_type"),
         board=board,
         recent=rs.recent_payments(scope, 20),
+        geo=rs.geography(scope, period.start, period.end),
+        platforms=rs.platforms(scope),
         due_total=sum(max(0, r["balance"].due) for r in board),
     )
 
@@ -147,16 +152,16 @@ def partner_new_form(
     request: Request, me: Account = Depends(require_admin), db: Session = Depends(get_db)
 ):
     prefill = {}
-    ref = request.query_params.get("referrer")
-    if ref and ref.isdigit():
-        u = rs.users_by_ids([int(ref)]).get(int(ref))
-        if u:
-            prefill = {
-                "referrer": u["id"],
-                "name": u["name"] or u["username"] or "",
-                "login": (u["username"] or f"partner{u['id']}").lower(),
-                "telegram_id": u["telegram_id"] or "",
-            }
+    ref = request.query_params.get("referrer", "").strip()[:64]
+    if ref:
+        u = rs.users_by_ids([ref]).get(ref) or {}
+        login = re.sub(r"[^a-z0-9_.-]", "", (u.get("username") or "").lower())
+        prefill = {
+            "referrer": ref,
+            "name": u.get("name") or u.get("username") or "",
+            "login": login if len(login) >= 3 else f"partner{ref}"[:64].lower(),
+            "telegram_id": u.get("telegram_id") or "",
+        }
     return render(
         request,
         "admin/partner_new.html",
@@ -206,17 +211,14 @@ def partner_create(
         flash(request, f"Логин «{login}» уже занят", "error")
         return RedirectResponse("/admin/partners/new", 303)
 
-    if referrer.strip().isdigit():
-        u = rs.users_by_ids([int(referrer)]).get(int(referrer))
-        if u:
-            db.add(
-                PartnerSource(
-                    partner_id=partner.id,
-                    kind=SOURCE_REFERRER,
-                    ref_id=u["id"],
-                    label=_user_label(u),
-                )
+    referrer = referrer.strip()[:64]
+    if referrer:
+        u = rs.users_by_ids([referrer]).get(referrer) or {"user_id": referrer}
+        db.add(
+            PartnerSource(
+                partner_id=partner.id, kind=SOURCE_REFERRER, ref=referrer, label=_user_label(u)
             )
+        )
     try:
         db.commit()
     except IntegrityError:
@@ -266,14 +268,9 @@ def partner_settings(
     db: Session = Depends(get_db),
 ):
     p = _partner(db, partner_id)
-    try:
-        links = rs.ad_links()
-        db_error = None
-    except Exception as exc:  # show the page even if Remnashop is unreachable
-        links, db_error = [], str(exc)
     taken = {
-        s.ref_id: s.partner_id
-        for s in db.scalars(select(PartnerSource).where(PartnerSource.kind == SOURCE_AD_LINK))
+        s.ref: s.partner_id
+        for s in db.scalars(select(PartnerSource).where(PartnerSource.kind == SOURCE_AD))
     }
     return render(
         request,
@@ -283,9 +280,8 @@ def partner_settings(
         partner=p,
         balance=reward_balance(db, p),
         default_days=default_reward_days(db),
-        ad_links=links,
-        taken_links=taken,
-        db_error=db_error,
+        source_list=rs.source_list(),
+        taken_sources=taken,
     )
 
 
@@ -365,7 +361,7 @@ def partner_delete(
 
 
 def _user_label(u: dict) -> str:
-    parts = [u.get("name") or ""]
+    parts = [u.get("name") or f"id {u.get('user_id')}"]
     if u.get("username"):
         parts.append(f"@{u['username']}")
     if u.get("telegram_id"):
@@ -379,7 +375,7 @@ def source_add(
     request: Request,
     kind: str = Form(...),
     query: str = Form(""),
-    ad_link_id: str = Form(""),
+    source_name: str = Form(""),
     me: Account = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
@@ -387,17 +383,12 @@ def source_add(
     if kind == SOURCE_REFERRER:
         u = rs.find_user(query)
         if not u:
-            flash(request, f"Пользователь «{query}» не найден в Remnashop", "error")
+            flash(request, f"Пользователь «{query}» не найден среди полученных от бота", "error")
             return _back(p.id)
-        source = PartnerSource(partner_id=p.id, kind=kind, ref_id=u["id"], label=_user_label(u))
-    elif kind == SOURCE_AD_LINK and ad_link_id.isdigit():
-        link = next((a for a in rs.ad_links() if a["id"] == int(ad_link_id)), None)
-        if not link:
-            flash(request, "Рекламная ссылка не найдена", "error")
-            return _back(p.id)
-        source = PartnerSource(
-            partner_id=p.id, kind=kind, ref_id=link["id"], label=f"{link['name']} ({link['code']})"
-        )
+        source = PartnerSource(partner_id=p.id, kind=kind, ref=u["user_id"], label=_user_label(u))
+    elif kind == SOURCE_AD and source_name.strip():
+        name = source_name.strip()[:128]
+        source = PartnerSource(partner_id=p.id, kind=kind, ref=name, label=name)
     else:
         flash(request, "Не выбран источник", "error")
         return _back(p.id)
@@ -409,7 +400,7 @@ def source_add(
         db.rollback()
         owner = db.scalar(
             select(PartnerSource).where(
-                PartnerSource.kind == source.kind, PartnerSource.ref_id == source.ref_id
+                PartnerSource.kind == source.kind, PartnerSource.ref == source.ref
             )
         )
         who = owner.partner.login if owner else "?"
@@ -503,7 +494,7 @@ def payouts(request: Request, me: Account = Depends(require_admin), db: Session 
 @router.get("/referrers")
 def referrers(request: Request, me: Account = Depends(require_admin), db: Session = Depends(get_db)):
     assigned = {
-        s.ref_id: s.partner
+        s.ref: s.partner
         for s in db.scalars(
             select(PartnerSource)
             .options(selectinload(PartnerSource.partner))
@@ -516,7 +507,7 @@ def referrers(request: Request, me: Account = Depends(require_admin), db: Sessio
         me,
         rows=rs.top_referrers(100),
         assigned=assigned,
-        ad_links=rs.ad_links(),
+        source_list=rs.source_list(),
     )
 
 
@@ -527,7 +518,6 @@ def settings_page(request: Request, me: Account = Depends(require_admin), db: Se
         "admin/settings.html",
         me,
         default_days=default_reward_days(db),
-        db_ok=rs.ping(),
     )
 
 
@@ -549,3 +539,39 @@ def settings_save(
     db.commit()
     flash(request, "Настройки сохранены")
     return RedirectResponse("/admin/settings", 303)
+
+
+# --------------------------------------------------------------------------- integrations
+
+
+@router.get("/integrations")
+def integrations(request: Request, me: Account = Depends(require_admin), db: Session = Depends(get_db)):
+    base = get_settings().public_url.rstrip("/") or str(request.base_url).rstrip("/")
+    return render(
+        request,
+        "admin/integrations.html",
+        me,
+        ingest_url=f"{base}/api/ingest",
+        token=active_token(db),
+        new_token=request.session.pop("new_token", None),
+        stats=rs.ingest_stats(),
+    )
+
+
+@router.post("/integrations/token", dependencies=[Depends(verify_csrf)])
+def integrations_token(request: Request, me: Account = Depends(require_admin), db: Session = Depends(get_db)):
+    # Shown once on the next page view, then dropped from the session.
+    request.session["new_token"] = issue_token(db)
+    return RedirectResponse("/admin/integrations", 303)
+
+
+INTEGRATION_DIR = Path(__file__).resolve().parents[2] / "integration"
+INTEGRATION_FILES = {"events_api.md", "kago_emitter.py", "remnashop_sync.py"}
+
+
+@router.get("/integrations/files/{name}")
+def integration_file(name: str, me: Account = Depends(require_admin)):
+    path = INTEGRATION_DIR / name
+    if name not in INTEGRATION_FILES or not path.is_file():
+        raise HTTPException(404, "Файл не найден")
+    return FileResponse(path, media_type="text/plain; charset=utf-8", filename=name)

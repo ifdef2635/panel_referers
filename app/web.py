@@ -95,7 +95,7 @@ def mask_name(name: str | None) -> str:
 
 
 def who(row: dict, reveal: bool) -> dict:
-    """Display fields for a Remnashop user, hiding contacts from partners if required."""
+    """Display fields for a bot user, hiding contacts from partners if required."""
     if reveal:
         return {
             "name": row.get("name") or "—",

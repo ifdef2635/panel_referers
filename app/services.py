@@ -4,12 +4,13 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from . import remnashop as rs
+from . import analytics as rs
 from .config import get_settings
+from .db import fetch_one
 from .models import (
     DEFAULT_REWARD_DAYS,
     ROLE_PARTNER,
-    SOURCE_AD_LINK,
+    SOURCE_AD,
     SOURCE_REFERRER,
     Account,
     Payout,
@@ -48,8 +49,8 @@ def reward_days_for(db: Session, partner: Account) -> int:
 
 def partner_scope(partner: Account) -> rs.Scope:
     return rs.Scope(
-        referrer_ids=tuple(sorted(s.ref_id for s in partner.sources if s.kind == SOURCE_REFERRER)),
-        ad_link_ids=tuple(sorted(s.ref_id for s in partner.sources if s.kind == SOURCE_AD_LINK)),
+        referrer_ids=tuple(sorted(s.ref for s in partner.sources if s.kind == SOURCE_REFERRER)),
+        sources=tuple(sorted(s.ref for s in partner.sources if s.kind == SOURCE_AD)),
         second_level=partner.include_second_level,
     )
 
@@ -185,9 +186,10 @@ def _first_activity(scope: rs.Scope) -> datetime | None:
         return None
     row = rs.cached(
         ("first_activity", scope),
-        lambda: rs.fetch_one(
+        lambda: fetch_one(
             rs._with(scope)
-            + " SELECT MIN(u.created_at) AS m FROM scope s JOIN users u ON u.id = s.user_id",
+            + " SELECT MIN(u.registered_at) AS m FROM scope s"
+            " JOIN bot_users u ON u.user_id = s.user_id",
             scope.params(),
         ),
     )

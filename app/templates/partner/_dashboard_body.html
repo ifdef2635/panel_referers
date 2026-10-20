@@ -1,4 +1,4 @@
-{% from "macros.html" import period_picker, kpis, chart_block, balance_card, payments_table with context %}
+{% from "macros.html" import period_picker, kpis, chart_block, balance_card, payments_table, geo_platforms with context %}
 {% if no_sources %}
   <div class="card notice">
     {% if me.is_admin %}
@@ -12,6 +12,7 @@
   {{ kpis(stats, period, balance.rate) }}
   {{ chart_block(chart) }}
   {{ balance_card(balance) }}
+  {{ geo_platforms(geo, platforms) }}
   <section class="card">
     <h3>Последние оплаты</h3>
     {{ payments_table(recent, me.is_admin or partner.show_contacts) }}

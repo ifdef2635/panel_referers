@@ -8,20 +8,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    # Panel
-    app_name: str = "Referral Panel"
+    app_name: str = "Kago Analytics"
     secret_key: str = Field(min_length=32)
-    # SQLite with the panel's own data: accounts, partner sources, payouts.
-    panel_db_url: str = "sqlite:///./data/panel.db"
+    # PostgreSQL of the panel: accounts, partners, payouts and the events received from the bot.
+    database_url: str = "postgresql+psycopg://kago:kago@127.0.0.1:5432/kago"
+    # Public base URL, shown on the integrations page (e.g. https://stats.example.com).
+    public_url: str = ""
     timezone: str = "Europe/Moscow"
     # Set to false only for local development over plain HTTP.
     cookie_secure: bool = True
     session_max_age: int = 60 * 60 * 24 * 7
-    stats_cache_seconds: int = 60
-
-    # Remnashop PostgreSQL (read-only access is enough and recommended).
-    remnashop_dsn: str = "postgresql://panel_ro:password@127.0.0.1:5001/remnashop"
-    remnashop_pool_size: int = 5
+    stats_cache_seconds: int = 30
 
     # Optional bootstrap admin, created on startup if no admin exists yet.
     admin_login: str | None = None

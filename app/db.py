@@ -1,7 +1,7 @@
 from collections.abc import Iterator
-from pathlib import Path
+from typing import Any
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
@@ -11,29 +11,7 @@ class Base(DeclarativeBase):
     pass
 
 
-def _make_engine():
-    url = get_settings().panel_db_url
-    kwargs = {}
-    if url.startswith("sqlite"):
-        db_path = url.split("///", 1)[-1]
-        if db_path and db_path != ":memory:":
-            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        kwargs["connect_args"] = {"check_same_thread": False}
-    engine = create_engine(url, pool_pre_ping=True, **kwargs)
-
-    if url.startswith("sqlite"):
-
-        @event.listens_for(engine, "connect")
-        def _sqlite_pragmas(dbapi_conn, _):
-            cur = dbapi_conn.cursor()
-            cur.execute("PRAGMA foreign_keys=ON")
-            cur.execute("PRAGMA journal_mode=WAL")
-            cur.close()
-
-    return engine
-
-
-engine = _make_engine()
+engine = create_engine(get_settings().database_url, pool_pre_ping=True, pool_size=10, max_overflow=10)
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
@@ -46,3 +24,14 @@ def init_db() -> None:
 def get_db() -> Iterator[Session]:
     with SessionLocal() as session:
         yield session
+
+
+def fetch_all(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Run raw SQL with psycopg-style %(name)s parameters."""
+    with engine.connect() as conn:
+        return [dict(r) for r in conn.exec_driver_sql(sql, params or {}).mappings()]
+
+
+def fetch_one(sql: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    rows = fetch_all(sql, params)
+    return rows[0] if rows else None

@@ -1,20 +1,20 @@
 {% extends "base.html" %}
 {% block title %}Рефереры{% endblock %}
 {% block content %}
-<div class="page-head"><h1>Рефереры Remnashop</h1></div>
+<div class="page-head"><h1>Рефереры</h1></div>
 <section class="card">
-  <p class="muted sm">Пользователи бота, у которых больше всего приглашённых. Отсюда удобно заводить партнёров.</p>
+  <p class="muted sm">Пользователи бота, у которых больше всего приглашённых (по полю <code>referrer_id</code> в событиях). Отсюда удобно заводить партнёров.</p>
   <div class="table-wrap">
   <table class="table">
     <thead><tr><th>Пользователь</th><th>Telegram ID</th><th class="r">Приглашено</th><th class="r">Из них купили</th><th>Партнёр</th></tr></thead>
     <tbody>
     {% for r in rows %}
-      {% set owner = assigned.get(r.id) %}
+      {% set owner = assigned.get(r.user_id) %}
       <tr>
-        <td>{{ r.name or '—' }}{% if r.username %} <span class="muted sm">@{{ r.username }}</span>{% endif %}</td>
+        <td>{{ r.name or ('id ' ~ r.user_id) }}{% if r.username %} <span class="muted sm">@{{ r.username }}</span>{% endif %}</td>
         <td>{{ r.telegram_id or '—' }}</td>
         <td class="r">{{ r.referrals|num }}</td><td class="r">{{ r.buyers|num }}</td>
-        <td>{% if owner %}<a href="/admin/partners/{{ owner.id }}">{{ owner.name }}</a>{% else %}<a class="btn sm" href="/admin/partners/new?referrer={{ r.id }}">Сделать партнёром</a>{% endif %}</td>
+        <td>{% if owner %}<a href="/admin/partners/{{ owner.id }}">{{ owner.name }}</a>{% else %}<a class="btn sm" href="/admin/partners/new?referrer={{ r.user_id|urlencode }}">Сделать партнёром</a>{% endif %}</td>
       </tr>
     {% else %}
       <tr><td colspan="5" class="empty">Рефералов пока нет</td></tr>
@@ -24,15 +24,15 @@
   </div>
 </section>
 <section class="card">
-  <h3>Рекламные ссылки</h3>
+  <h3>Источники (рекламные ссылки)</h3>
   <div class="table-wrap">
   <table class="table">
-    <thead><tr><th>Название</th><th>Код</th><th class="r">Пользователей</th><th>Статус</th></tr></thead>
+    <thead><tr><th>Название</th><th class="r">Пользователей</th><th>Последняя регистрация</th></tr></thead>
     <tbody>
-    {% for a in ad_links %}
-      <tr><td>{{ a.name }}</td><td><code>{{ a.code }}</code></td><td class="r">{{ a.users|num }}</td><td>{{ 'активна' if a.is_active else 'выключена' }}</td></tr>
+    {% for a in source_list %}
+      <tr><td>{{ a.name }}</td><td class="r">{{ a.users|num }}</td><td>{{ a.last_at|dt }}</td></tr>
     {% else %}
-      <tr><td colspan="4" class="empty">Рекламных ссылок нет</td></tr>
+      <tr><td colspan="3" class="empty">Источников пока нет</td></tr>
     {% endfor %}
     </tbody>
   </table>

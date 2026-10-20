@@ -1,8 +1,4 @@
-"""Read-only access to the Remnashop PostgreSQL database.
-
-Targets the Remnashop schema after migration 0026 (users.id based foreign keys):
-users, referrals, transactions, subscriptions, ad_links.
-"""
+"""Statistics over the data received from the bot (tables filled by app/ingest.py)."""
 
 import threading
 import time
@@ -11,61 +7,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
-
 from .config import get_settings
-
-_pool: ConnectionPool | None = None
-_pool_lock = threading.Lock()
-
-
-def get_pool() -> ConnectionPool:
-    global _pool
-    with _pool_lock:
-        if _pool is None:
-            s = get_settings()
-            _pool = ConnectionPool(
-                s.remnashop_dsn,
-                min_size=1,
-                max_size=s.remnashop_pool_size,
-                kwargs={
-                    "row_factory": dict_row,
-                    # Defence in depth: even with a writable role nothing gets modified.
-                    "options": "-c default_transaction_read_only=on -c statement_timeout=30000",
-                    "connect_timeout": 5,
-                },
-                open=True,
-                timeout=10,
-            )
-        return _pool
-
-
-def close_pool() -> None:
-    global _pool
-    with _pool_lock:
-        if _pool is not None:
-            _pool.close()
-            _pool = None
-
-
-def fetch_all(sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    with get_pool().connection() as conn:
-        return list(conn.execute(sql, params or {}).fetchall())
-
-
-def fetch_one(sql: str, params: dict[str, Any] | None = None) -> dict[str, Any] | None:
-    rows = fetch_all(sql, params)
-    return rows[0] if rows else None
-
-
-def ping() -> bool:
-    try:
-        fetch_one("SELECT 1 AS ok")
-        return True
-    except Exception:
-        return False
-
+from .db import fetch_all, fetch_one
 
 # --------------------------------------------------------------------------- cache
 
@@ -98,25 +41,25 @@ def clear_cache() -> None:
 
 @dataclass(frozen=True)
 class Scope:
-    """Set of Remnashop users a statistic is computed over.
+    """Set of bot users a statistic is computed over.
 
-    all_users=True means the whole shop (admin view). Otherwise the users that came
-    through the partner's referrer accounts (1st level, optionally 2nd) or ad links.
+    all_users=True means the whole shop (admin view). Otherwise the users that came through
+    the partner's referrer accounts (1st level, optionally 2nd) or sources (ad links).
     """
 
     all_users: bool = False
-    referrer_ids: tuple[int, ...] = field(default_factory=tuple)
-    ad_link_ids: tuple[int, ...] = field(default_factory=tuple)
+    referrer_ids: tuple[str, ...] = field(default_factory=tuple)
+    sources: tuple[str, ...] = field(default_factory=tuple)
     second_level: bool = False
 
     @property
     def empty(self) -> bool:
-        return not self.all_users and not self.referrer_ids and not self.ad_link_ids
+        return not self.all_users and not self.referrer_ids and not self.sources
 
     def params(self) -> dict[str, Any]:
         return {
             "ref_ids": list(self.referrer_ids),
-            "ad_ids": list(self.ad_link_ids),
+            "sources": list(self.sources),
             "second": self.second_level,
         }
 
@@ -124,64 +67,65 @@ class Scope:
         if self.all_users:
             return """
             scope AS (
-                SELECT u.id AS user_id,
-                       CASE WHEN r.id IS NOT NULL THEN 'referral'
-                            WHEN u.ad_link_id IS NOT NULL THEN 'ad_link'
+                SELECT u.user_id,
+                       CASE WHEN u.referrer_id IS NOT NULL THEN 'referral'
+                            WHEN u.source IS NOT NULL THEN 'ad_link'
                             ELSE 'organic' END AS via
-                FROM users u
-                LEFT JOIN referrals r ON r.referred_id = u.id
+                FROM bot_users u
             )"""
         return """
             scope_raw AS (
-                SELECT r.referred_id AS user_id, 'ref1' AS via, 1 AS prio
-                FROM referrals r
-                WHERE r.referrer_id = ANY(%(ref_ids)s::int[])
+                SELECT u.user_id, 'ref1' AS via, 1 AS prio
+                FROM bot_users u
+                WHERE u.referrer_id = ANY(%(ref_ids)s::text[])
                 UNION ALL
-                SELECT r2.referred_id, 'ref2', 2
-                FROM referrals r1
-                JOIN referrals r2 ON r2.referrer_id = r1.referred_id
-                WHERE %(second)s AND r1.referrer_id = ANY(%(ref_ids)s::int[])
+                SELECT u2.user_id, 'ref2', 2
+                FROM bot_users u1
+                JOIN bot_users u2 ON u2.referrer_id = u1.user_id
+                WHERE %(second)s AND u1.referrer_id = ANY(%(ref_ids)s::text[])
                 UNION ALL
-                SELECT u.id, 'ad_link', 3
-                FROM users u
-                WHERE u.ad_link_id = ANY(%(ad_ids)s::int[])
+                SELECT u.user_id, 'ad_link', 3
+                FROM bot_users u
+                WHERE u.source = ANY(%(sources)s::text[])
             ),
             scope AS (
                 SELECT DISTINCT ON (user_id) user_id, via
                 FROM scope_raw
-                WHERE NOT (user_id = ANY(%(ref_ids)s::int[]))
+                WHERE NOT (user_id = ANY(%(ref_ids)s::text[]))
                 ORDER BY user_id, prio
             )"""
 
-
-# A "purchase" is a completed, non-test transaction with a positive final amount.
-_PAID_CTE = """
-    paid AS (
-        SELECT t.id, t.user_id, t.created_at,
-               t.currency::text AS currency,
-               t.gateway_type::text AS gateway,
-               t.purchase_type::text AS purchase_type,
-               COALESCE(t.plan_snapshot->>'name', '—') AS plan,
-               COALESCE(NULLIF(t.pricing->>'final_amount', '')::numeric, 0) AS amount
-        FROM transactions t
-        JOIN scope s ON s.user_id = t.user_id
-        WHERE t.status = 'COMPLETED' AND NOT t.is_test
-          AND COALESCE(NULLIF(t.pricing->>'final_amount', '')::numeric, 0) > 0
-    ),
-    first_paid AS (
-        SELECT user_id, MIN(created_at) AS first_paid_at FROM paid GROUP BY user_id
-    )"""
+    def paid_cte(self) -> str:
+        # A purchase: completed, not test, not refunded, positive amount.
+        join = "" if self.all_users else "JOIN scope s ON s.user_id = p.user_id"
+        return f"""
+            paid AS (
+                SELECT p.payment_id, p.user_id, p.paid_at AS created_at, p.currency,
+                       COALESCE(p.gateway, '—') AS gateway,
+                       COALESCE(p.purchase_type, '—') AS purchase_type,
+                       COALESCE(p.plan, '—') AS plan, p.amount
+                FROM payments p {join}
+                WHERE p.paid_at IS NOT NULL AND p.amount > 0 AND NOT p.is_test
+                  AND p.refunded_at IS NULL
+            ),
+            first_paid AS (
+                SELECT user_id, MIN(created_at) AS first_paid_at FROM paid
+                WHERE user_id IS NOT NULL GROUP BY user_id
+            )"""
 
 
 def _with(scope: Scope, *, paid: bool = False) -> str:
     parts = [scope.cte()]
     if paid:
-        parts.append(_PAID_CTE)
+        parts.append(scope.paid_cte())
     return "WITH " + ",".join(parts)
 
 
 def _money(rows: list[dict[str, Any]], key: str = "total") -> dict[str, Decimal]:
     return {r["currency"]: Decimal(r[key] or 0) for r in rows}
+
+
+ACTIVE = "sub.status = 'ACTIVE' AND sub.expire_at > now()"
 
 
 # --------------------------------------------------------------------------- stats
@@ -195,23 +139,18 @@ def overview(scope: Scope, start: datetime, end: datetime) -> dict[str, Any]:
     def produce():
         head = fetch_one(
             _with(scope, paid=True)
-            + """
+            + f"""
             SELECT
-              (SELECT COUNT(*) FROM scope) AS users_total,
-              (SELECT COUNT(*) FROM scope s JOIN users u ON u.id = s.user_id
-                 WHERE u.created_at >= %(start)s AND u.created_at < %(end)s) AS registrations,
-              (SELECT COUNT(DISTINCT sub.user_id) FROM subscriptions sub
-                 JOIN scope s ON s.user_id = sub.user_id
-                 WHERE sub.is_trial AND sub.created_at >= %(start)s
-                   AND sub.created_at < %(end)s) AS trials,
-              (SELECT COUNT(*) FROM scope s JOIN users u ON u.id = s.user_id
-                 JOIN subscriptions sub ON sub.id = u.current_subscription_id
-                 WHERE sub.status = 'ACTIVE' AND sub.expire_at > now()
-                   AND NOT sub.is_trial) AS active_paid,
-              (SELECT COUNT(*) FROM scope s JOIN users u ON u.id = s.user_id
-                 JOIN subscriptions sub ON sub.id = u.current_subscription_id
-                 WHERE sub.status = 'ACTIVE' AND sub.expire_at > now()
-                   AND sub.is_trial) AS active_trial,
+              (SELECT COUNT(*) FROM scope s JOIN bot_users u ON u.user_id = s.user_id
+                 WHERE u.registered_at IS NOT NULL) AS users_total,
+              (SELECT COUNT(*) FROM scope s JOIN bot_users u ON u.user_id = s.user_id
+                 WHERE u.registered_at >= %(start)s AND u.registered_at < %(end)s) AS registrations,
+              (SELECT COUNT(*) FROM scope s JOIN bot_users u ON u.user_id = s.user_id
+                 WHERE u.trial_started_at >= %(start)s AND u.trial_started_at < %(end)s) AS trials,
+              (SELECT COUNT(*) FROM scope s JOIN subscriptions sub ON sub.user_id = s.user_id
+                 WHERE {ACTIVE} AND NOT sub.is_trial) AS active_paid,
+              (SELECT COUNT(*) FROM scope s JOIN subscriptions sub ON sub.user_id = s.user_id
+                 WHERE {ACTIVE} AND sub.is_trial) AS active_trial,
               (SELECT COUNT(*) FROM paid
                  WHERE created_at >= %(start)s AND created_at < %(end)s) AS payments,
               (SELECT COUNT(DISTINCT user_id) FROM paid
@@ -219,9 +158,9 @@ def overview(scope: Scope, start: datetime, end: datetime) -> dict[str, Any]:
               (SELECT COUNT(*) FROM first_paid
                  WHERE first_paid_at >= %(start)s AND first_paid_at < %(end)s) AS new_buyers,
               (SELECT COUNT(*) FROM first_paid) AS buyers_total,
-              (SELECT COUNT(*) FROM scope s JOIN users u ON u.id = s.user_id
+              (SELECT COUNT(*) FROM scope s JOIN bot_users u ON u.user_id = s.user_id
                  JOIN first_paid fp ON fp.user_id = s.user_id
-                 WHERE u.created_at >= %(start)s AND u.created_at < %(end)s) AS converted
+                 WHERE u.registered_at >= %(start)s AND u.registered_at < %(end)s) AS converted
             """,
             p,
         )
@@ -272,9 +211,9 @@ def series(scope: Scope, start: datetime, end: datetime, bucket: str) -> dict[st
         regs = fetch_all(
             _with(scope)
             + f"""
-            SELECT {b.format(col='u.created_at')} AS d, COUNT(*) AS n
-            FROM scope s JOIN users u ON u.id = s.user_id
-            WHERE u.created_at >= %(start)s AND u.created_at < %(end)s
+            SELECT {b.format(col='u.registered_at')} AS d, COUNT(*) AS n
+            FROM scope s JOIN bot_users u ON u.user_id = s.user_id
+            WHERE u.registered_at >= %(start)s AND u.registered_at < %(end)s
             GROUP BY 1 ORDER BY 1
             """,
             p,
@@ -333,23 +272,63 @@ def breakdown(scope: Scope, start: datetime, end: datetime, dimension: str) -> l
 def sources_breakdown(start: datetime, end: datetime) -> list[dict]:
     """Admin: organic vs referral vs ad link."""
     scope = Scope(all_users=True)
-    p = {"start": start, "end": end}
     return cached(
         ("sources", start, end),
         lambda: fetch_all(
             _with(scope, paid=True)
             + """
             SELECT s.via,
-                   COUNT(*) FILTER (WHERE u.created_at >= %(start)s AND u.created_at < %(end)s)
+                   COUNT(*) FILTER (WHERE u.registered_at >= %(start)s AND u.registered_at < %(end)s)
                      AS registrations,
                    COUNT(fp.user_id) FILTER (WHERE fp.first_paid_at >= %(start)s
                      AND fp.first_paid_at < %(end)s) AS new_buyers
             FROM scope s
-            JOIN users u ON u.id = s.user_id
+            JOIN bot_users u ON u.user_id = s.user_id
             LEFT JOIN first_paid fp ON fp.user_id = s.user_id
             GROUP BY s.via ORDER BY registrations DESC
             """,
+            {"start": start, "end": end},
+        ),
+    )
+
+
+def geography(scope: Scope, start: datetime, end: datetime, limit: int = 15) -> list[dict]:
+    """Registrations and new buyers by country for users registered in the period."""
+    if scope.empty:
+        return []
+    p = scope.params() | {"start": start, "end": end, "limit": limit}
+    return cached(
+        ("geo", scope, start, end, limit),
+        lambda: fetch_all(
+            _with(scope, paid=True)
+            + """
+            SELECT COALESCE(u.country, '—') AS country, COUNT(*) AS registrations,
+                   COUNT(fp.user_id) AS buyers
+            FROM scope s
+            JOIN bot_users u ON u.user_id = s.user_id
+            LEFT JOIN first_paid fp ON fp.user_id = s.user_id
+            WHERE u.registered_at >= %(start)s AND u.registered_at < %(end)s
+            GROUP BY 1 ORDER BY registrations DESC LIMIT %(limit)s
+            """,
             p,
+        ),
+    )
+
+
+def platforms(scope: Scope) -> list[dict]:
+    """Devices by platform (all time): devices and distinct users."""
+    if scope.empty:
+        return []
+    return cached(
+        ("platforms", scope),
+        lambda: fetch_all(
+            _with(scope)
+            + """
+            SELECT d.platform, COUNT(*) AS devices, COUNT(DISTINCT d.user_id) AS users
+            FROM devices d JOIN scope s ON s.user_id = d.user_id
+            GROUP BY 1 ORDER BY users DESC, devices DESC
+            """,
+            scope.params(),
         ),
     )
 
@@ -380,30 +359,29 @@ def users_page(
 ) -> tuple[list[dict], int]:
     if scope.empty:
         return [], 0
-    where = ["TRUE"]
+    where = ["u.registered_at IS NOT NULL"]
     p = scope.params() | {"limit": per_page, "offset": (page - 1) * per_page}
     if search:
         where.append(
             "(u.username ILIKE %(q)s OR u.name ILIKE %(q)s OR u.telegram_id::text = %(qexact)s"
-            " OR u.id::text = %(qexact)s)"
+            " OR u.user_id = %(qexact)s)"
         )
-        p["q"] = f"%{search.lstrip('@')}%"
+        p["q"] = "%" + search.lstrip("@").replace("%", r"\%").replace("_", r"\_") + "%"
         p["qexact"] = search.strip()
     if flt == "buyers":
         where.append("fp.user_id IS NOT NULL")
     elif flt == "no_purchase":
         where.append("fp.user_id IS NULL")
     elif flt == "active":
-        where.append("sub.status = 'ACTIVE' AND sub.expire_at > now() AND NOT sub.is_trial")
+        where.append(f"{ACTIVE} AND NOT sub.is_trial")
     elif flt == "trial":
-        where.append("sub.is_trial AND sub.status = 'ACTIVE' AND sub.expire_at > now()")
+        where.append(f"{ACTIVE} AND sub.is_trial")
 
     base = (
         _with(scope, paid=True)
         + """,
         totals AS (
-            SELECT user_id, SUM(c) AS payments,
-                   jsonb_object_agg(currency, total) AS spent
+            SELECT user_id, SUM(c) AS payments, jsonb_object_agg(currency, total) AS spent
             FROM (SELECT user_id, currency, SUM(amount) AS total, COUNT(*) AS c
                   FROM paid GROUP BY user_id, currency) x
             GROUP BY user_id
@@ -412,29 +390,26 @@ def users_page(
     )
     joins = """
         FROM scope s
-        JOIN users u ON u.id = s.user_id
-        LEFT JOIN subscriptions sub ON sub.id = u.current_subscription_id
+        JOIN bot_users u ON u.user_id = s.user_id
+        LEFT JOIN subscriptions sub ON sub.user_id = s.user_id
         LEFT JOIN first_paid fp ON fp.user_id = s.user_id
         LEFT JOIN totals t ON t.user_id = s.user_id
-        LEFT JOIN referrals ref ON ref.referred_id = s.user_id
-        LEFT JOIN users ru ON ru.id = ref.referrer_id
-        LEFT JOIN ad_links al ON al.id = u.ad_link_id
+        LEFT JOIN bot_users ru ON ru.user_id = u.referrer_id
     """
     w = " WHERE " + " AND ".join(where)
     total = fetch_one(base + "SELECT COUNT(*) AS n " + joins + w, p)
     rows = fetch_all(
         base
         + """
-        SELECT u.id, u.telegram_id, u.username, u.name, u.created_at, u.is_blocked,
-               s.via, sub.status::text AS sub_status, sub.expire_at, sub.is_trial,
-               sub.plan_snapshot->>'name' AS plan,
+        SELECT u.user_id, u.telegram_id, u.username, u.name, u.registered_at AS created_at,
+               u.country, u.source, s.via,
+               sub.status AS sub_status, sub.expire_at, sub.is_trial,
                fp.first_paid_at, COALESCE(t.payments, 0) AS payments, t.spent,
-               ru.id AS referrer_id, ru.username AS referrer_username, ru.name AS referrer_name,
-               al.name AS ad_link_name
+               u.referrer_id, ru.username AS referrer_username, ru.name AS referrer_name
         """
         + joins
         + w
-        + " ORDER BY u.created_at DESC LIMIT %(limit)s OFFSET %(offset)s",
+        + " ORDER BY u.registered_at DESC, u.user_id LIMIT %(limit)s OFFSET %(offset)s",
         p,
     )
     return rows, int(total["n"]) if total else 0
@@ -448,12 +423,13 @@ def recent_payments(scope: Scope, limit: int = 20) -> list[dict]:
         lambda: fetch_all(
             _with(scope, paid=True)
             + """
-            SELECT pd.*, u.username, u.name, u.telegram_id, s.via,
+            SELECT pd.*, u.username, u.name, u.telegram_id,
+                   COALESCE(s.via, 'organic') AS via,
                    (fp.first_paid_at = pd.created_at) AS is_first
             FROM paid pd
-            JOIN users u ON u.id = pd.user_id
-            JOIN scope s ON s.user_id = pd.user_id
-            JOIN first_paid fp ON fp.user_id = pd.user_id
+            LEFT JOIN bot_users u ON u.user_id = pd.user_id
+            LEFT JOIN scope s ON s.user_id = pd.user_id
+            LEFT JOIN first_paid fp ON fp.user_id = pd.user_id
             ORDER BY pd.created_at DESC LIMIT %(limit)s
             """,
             scope.params() | {"limit": limit},
@@ -465,66 +441,86 @@ def recent_payments(scope: Scope, limit: int = 20) -> list[dict]:
 
 
 def find_user(query: str) -> dict | None:
-    """Find a Remnashop user by internal id, telegram id, @username or referral code."""
+    """Find a bot user by bot id, Telegram id or @username."""
     q = query.strip()
     if not q:
         return None
+    row = fetch_one(
+        "SELECT user_id, telegram_id, username, name FROM bot_users WHERE user_id = %(q)s",
+        {"q": q},
+    )
+    if row:
+        return row
     if q.lstrip("-").isdigit():
-        row = fetch_one(
-            "SELECT id, telegram_id, username, name, referral_code FROM users"
-            " WHERE telegram_id = %(n)s ORDER BY id LIMIT 1",
+        return fetch_one(
+            "SELECT user_id, telegram_id, username, name FROM bot_users"
+            " WHERE telegram_id = %(n)s LIMIT 1",
             {"n": int(q)},
         )
-        if row:
-            return row
-        if abs(int(q)) < 2**31:
-            return fetch_one(
-                "SELECT id, telegram_id, username, name, referral_code FROM users WHERE id = %(n)s",
-                {"n": int(q)},
-            )
-        return None
     return fetch_one(
-        "SELECT id, telegram_id, username, name, referral_code FROM users"
-        " WHERE lower(username) = lower(%(q)s) OR referral_code = %(raw)s ORDER BY id LIMIT 1",
-        {"q": q.lstrip("@"), "raw": q},
+        "SELECT user_id, telegram_id, username, name FROM bot_users"
+        " WHERE lower(username) = lower(%(q)s) ORDER BY registered_at LIMIT 1",
+        {"q": q.lstrip("@")},
     )
 
 
-def users_by_ids(ids: list[int]) -> dict[int, dict]:
+def users_by_ids(ids: list[str]) -> dict[str, dict]:
     if not ids:
         return {}
     rows = fetch_all(
-        "SELECT id, telegram_id, username, name, referral_code FROM users"
-        " WHERE id = ANY(%(ids)s::int[])",
+        "SELECT user_id, telegram_id, username, name FROM bot_users"
+        " WHERE user_id = ANY(%(ids)s::text[])",
         {"ids": ids},
     )
-    return {r["id"]: r for r in rows}
+    return {r["user_id"]: r for r in rows}
 
 
-def ad_links() -> list[dict]:
+def source_list() -> list[dict]:
+    """Ad links / sources seen in user.registered events."""
     return fetch_all(
         """
-        SELECT al.id, al.name, al.code, al.is_active, COUNT(u.id) AS users
-        FROM ad_links al LEFT JOIN users u ON u.ad_link_id = al.id
-        GROUP BY al.id ORDER BY al.id DESC
+        SELECT source AS name, COUNT(*) AS users, MAX(registered_at) AS last_at
+        FROM bot_users WHERE source IS NOT NULL
+        GROUP BY source ORDER BY users DESC
         """
     )
 
 
-def top_referrers(limit: int = 50) -> list[dict]:
+def top_referrers(limit: int = 100) -> list[dict]:
     return cached(
         ("top_referrers", limit),
         lambda: fetch_all(
             """
-            SELECT u.id, u.telegram_id, u.username, u.name, COUNT(r.id) AS referrals,
-                   COUNT(DISTINCT t.user_id) AS buyers
-            FROM referrals r
-            JOIN users u ON u.id = r.referrer_id
-            LEFT JOIN transactions t ON t.user_id = r.referred_id AND t.status = 'COMPLETED'
-                 AND NOT t.is_test
-                 AND COALESCE(NULLIF(t.pricing->>'final_amount', '')::numeric, 0) > 0
-            GROUP BY u.id ORDER BY referrals DESC LIMIT %(limit)s
+            WITH buyers AS (
+                SELECT DISTINCT user_id FROM payments
+                WHERE paid_at IS NOT NULL AND amount > 0 AND NOT is_test AND refunded_at IS NULL
+            )
+            SELECT r.referrer_id AS user_id, ru.telegram_id, ru.username, ru.name,
+                   COUNT(*) AS referrals, COUNT(b.user_id) AS buyers
+            FROM bot_users r
+            LEFT JOIN bot_users ru ON ru.user_id = r.referrer_id
+            LEFT JOIN buyers b ON b.user_id = r.user_id
+            WHERE r.referrer_id IS NOT NULL
+            GROUP BY r.referrer_id, ru.telegram_id, ru.username, ru.name
+            ORDER BY referrals DESC LIMIT %(limit)s
             """,
             {"limit": limit},
         ),
     )
+
+
+def ingest_stats() -> dict[str, Any]:
+    row = fetch_one(
+        """
+        SELECT COUNT(*) FILTER (WHERE NOT is_ignored) AS accepted,
+               COUNT(*) FILTER (WHERE is_ignored) AS ignored,
+               MAX(received_at) AS last_received_at,
+               COUNT(*) FILTER (WHERE received_at > now() - interval '24 hours') AS last_24h
+        FROM events
+        """
+    )
+    by_type = fetch_all(
+        "SELECT type, COUNT(*) AS n, MAX(received_at) AS last_at FROM events"
+        " GROUP BY type ORDER BY n DESC"
+    )
+    return (row or {}) | {"by_type": by_type}

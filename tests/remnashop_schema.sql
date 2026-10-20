@@ -15,6 +15,7 @@ CREATE TABLE ad_links (
 CREATE TABLE users (
   id serial PRIMARY KEY, telegram_id bigint UNIQUE, username varchar(32),
   referral_code varchar(64) UNIQUE NOT NULL, name varchar NOT NULL,
+  language varchar(8) NOT NULL DEFAULT 'RU',
   role user_role NOT NULL DEFAULT 'USER', is_blocked boolean NOT NULL DEFAULT false,
   is_trial_available boolean NOT NULL DEFAULT true,
   ad_link_id int REFERENCES ad_links(id) ON DELETE SET NULL,

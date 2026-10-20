@@ -6,7 +6,7 @@
   <form method="post" action="/admin/partners/new" class="form">
     <input type="hidden" name="csrf" value="{{ csrf }}">
     <input type="hidden" name="referrer" value="{{ prefill.referrer or '' }}">
-    {% if prefill.referrer %}<div class="flash ok">Реферер Remnashop #{{ prefill.referrer }} будет сразу привязан как источник.</div>{% endif %}
+    {% if prefill.referrer %}<div class="flash ok">Реферер (id в боте {{ prefill.referrer }}) будет сразу привязан как источник.</div>{% endif %}
     <label>Имя<input name="name" value="{{ prefill.name or '' }}" maxlength="128"></label>
     <label>Логин для входа<input name="login" value="{{ prefill.login or '' }}" pattern="[a-z0-9_.\-]{3,64}" required></label>
     <label>Пароль<input name="password" value="{{ suggested_password }}" minlength="8" required></label>

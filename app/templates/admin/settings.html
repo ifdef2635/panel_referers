@@ -16,13 +16,11 @@
   </section>
   <section class="card">
     <h3>Состояние</h3>
-    <dl class="dl">
-      <dt>БД Remnashop</dt><dd>{% if db_ok %}<span class="badge ok">подключена</span>{% else %}<span class="badge off">нет связи</span>{% endif %}</dd>
-    </dl>
+    <p>Данные поступают от бота через <a href="/admin/integrations">API приёма событий</a>.</p>
     <form method="post" action="/admin/cache/clear" class="form">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <button class="btn">Сбросить кэш статистики</button>
-      <p class="muted sm">Статистика кэшируется на короткое время, чтобы не нагружать БД бота.</p>
+      <p class="muted sm">Статистика кэшируется на несколько секунд и сбрасывается при поступлении новых событий.</p>
     </form>
   </section>
 </div>
