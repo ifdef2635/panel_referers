@@ -15,6 +15,40 @@
 </section>
 
 <section class="card">
+  <h3>Подключение к БД бота</h3>
+  {% if botdb.enabled %}
+    <p>Панель сама читает базу бота <code>{{ botdb.dsn }}</code> (только чтение) раз в {{ botdb.interval }} с и подтягивает изменения: регистрации, приглашения, оплаты, возвраты, подписки. В коде бота ничего менять не нужно.</p>
+    {% set run = botdb.last_run %}
+    <div class="balance-grid">
+      <div><div class="kpi-label">Статус</div><div class="big sm-big">
+        {% if not run %}<span class="badge plain">ещё не запускалась</span>
+        {% elif run.error %}<span class="badge off">ошибка</span>
+        {% else %}<span class="badge ok">работает</span>{% endif %}</div></div>
+      <div><div class="kpi-label">Последний успешный проход</div><div class="big sm-big">{{ botdb.last_ok_at|isodt }}</div></div>
+      <div><div class="kpi-label">Новых событий за проход</div><div class="big">{{ (run.accepted if run else 0)|num }}</div></div>
+      <div><div class="kpi-label">Загружено всего</div><div class="big">{{ (botdb.total_accepted or 0)|num }}</div></div>
+    </div>
+    {% if run and run.error %}<div class="flash error">{{ run.error }}</div>{% endif %}
+    <div class="row-actions">
+      <form method="post" action="/admin/integrations/botdb/check" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn">Проверить подключение</button>
+      </form>
+      <form method="post" action="/admin/integrations/botdb/sync" class="inline">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn primary">Синхронизировать сейчас</button>
+      </form>
+      <form method="post" action="/admin/integrations/botdb/sync" class="inline" data-confirm="Перечитать всю историю из БД бота? Дубли не появятся, но проход займёт больше времени.">
+        <input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="full" value="true">
+        <button class="btn ghost">Пересинхронизировать всё</button>
+      </form>
+    </div>
+  {% else %}
+    <p>Не настроено. Чтобы панель сама читала базу бота, укажите в <code>/etc/kago/kago.env</code> строку
+      <code>REMNASHOP_DSN='postgresql://user:pass@host:5432/db'</code> и перезапустите службу
+      (или запустите <code>deploy/install.sh</code> с переменной <code>REMNASHOP_DSN</code>). Достаточно пользователя только для чтения.</p>
+  {% endif %}
+</section>
+
+<section class="card">
   <h3>2. Приём событий от бота</h3>
   <dl class="dl">
     <dt>Адрес</dt><dd><code>POST {{ ingest_url }}</code></dd>

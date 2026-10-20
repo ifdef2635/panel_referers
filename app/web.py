@@ -70,6 +70,15 @@ def fmt_dt(value: datetime | None, fmt: str = "%d.%m.%Y %H:%M") -> str:
     return value.astimezone(get_settings().tz).strftime(fmt)
 
 
+def fmt_isodt(value: str | None) -> str:
+    if not value:
+        return "—"
+    try:
+        return fmt_dt(datetime.fromisoformat(value))
+    except ValueError:
+        return value
+
+
 def fmt_date(value: datetime | None) -> str:
     return fmt_dt(value, "%d.%m.%Y")
 
@@ -106,7 +115,7 @@ def who(row: dict, reveal: bool) -> dict:
 
 
 templates.env.filters.update(
-    num=fmt_num, money=fmt_money, dt=fmt_dt, date=fmt_date, days=days_word
+    num=fmt_num, money=fmt_money, dt=fmt_dt, isodt=fmt_isodt, date=fmt_date, days=days_word
 )
 templates.env.globals.update(
     SUB_STATUS=SUB_STATUS,

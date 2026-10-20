@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from .. import analytics as rs
+from .. import botdb
 from ..config import get_settings
 from ..db import get_db
 from ..ingest import active_token, issue_token
@@ -555,6 +556,7 @@ def integrations(request: Request, me: Account = Depends(require_admin), db: Ses
         token=active_token(db),
         new_token=request.session.pop("new_token", None),
         stats=rs.ingest_stats(),
+        botdb=botdb.status(),
     )
 
 
@@ -575,3 +577,39 @@ def integration_file(name: str, me: Account = Depends(require_admin)):
     if name not in INTEGRATION_FILES or not path.is_file():
         raise HTTPException(404, "Файл не найден")
     return FileResponse(path, media_type="text/plain; charset=utf-8", filename=name)
+
+
+# --------------------------------------------------------------------------- bot database
+
+
+@router.post("/integrations/botdb/check", dependencies=[Depends(verify_csrf)])
+def botdb_check(request: Request, me: Account = Depends(require_admin)):
+    if not botdb.enabled():
+        flash(request, "Подключение к БД бота не настроено (REMNASHOP_DSN)", "error")
+        return RedirectResponse("/admin/integrations", 303)
+    try:
+        info = botdb.check()
+    except Exception as exc:
+        flash(request, f"Не удалось подключиться к БД бота: {type(exc).__name__}: {exc}", "error")
+        return RedirectResponse("/admin/integrations", 303)
+    if info["problems"]:
+        flash(request, "БД доступна, но схема не подходит: " + "; ".join(info["problems"]), "error")
+    else:
+        counts = ", ".join(f"{k}: {v}" for k, v in info["counts"].items())
+        migration = f", миграция {info['migration']}" if info.get("migration") else ""
+        flash(request, f"Подключение работает ({info['user']}@{info['db']}{migration}). Записей — {counts}")
+    return RedirectResponse("/admin/integrations", 303)
+
+
+@router.post("/integrations/botdb/sync", dependencies=[Depends(verify_csrf)])
+def botdb_sync(
+    request: Request, full: bool = Form(False), me: Account = Depends(require_admin)
+):
+    if not botdb.enabled():
+        flash(request, "Подключение к БД бота не настроено (REMNASHOP_DSN)", "error")
+        return RedirectResponse("/admin/integrations", 303)
+    if full:
+        botdb.reset_cursors()
+    botdb.trigger()
+    flash(request, "Полная пересинхронизация запущена" if full else "Синхронизация запущена")
+    return RedirectResponse("/admin/integrations", 303)

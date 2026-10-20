@@ -15,6 +15,8 @@
 #   ADMIN_LOGIN=admin           first admin login (password is generated)
 #   APP_NAME="Kago Analytics"   title shown in the panel
 #   TIMEZONE=Europe/Moscow      timezone for daily statistics
+#   REMNASHOP_DSN=postgresql://user:pass@host:5432/db   bot database to pull data from (optional,
+#                               read-only access is enough; empty = only events via /api/ingest)
 #   REPO_URL=https://github.com/...  BRANCH=main   clone from git instead of the script's directory
 #   ASSUME_YES=1                do not ask questions
 
@@ -80,11 +82,14 @@ if (( FIRST_INSTALL )); then
     ask APP_NAME "Название панели" "Kago Analytics"
     ask TIMEZONE "Часовой пояс для статистики" "Europe/Moscow"
     ask ADMIN_LOGIN "Логин администратора" "admin"
+    ask REMNASHOP_DSN "Строка подключения к БД бота (postgresql://user:pass@host:5432/db; пусто — только приём событий)" ""
 else
     info "Найдена существующая установка — обновление (данные и настройки сохраняются)"
     DOMAIN="${DOMAIN:-$(env_get PANEL_DOMAIN)}"
     LE_EMAIL="${LE_EMAIL:-$(env_get LE_EMAIL)}"
 fi
+REMNASHOP_DSN="${REMNASHOP_DSN:-$(env_get REMNASHOP_DSN)}"
+[[ "$REMNASHOP_DSN" != *"'"* ]] || die "REMNASHOP_DSN не должен содержать одинарных кавычек"
 
 # --------------------------------------------------------------------------- packages
 
@@ -177,8 +182,9 @@ COOKIE_SECURE=true
 STATS_CACHE_SECONDS=$cache
 PANEL_DOMAIN=${DOMAIN:-}
 LE_EMAIL=${LE_EMAIL:-}
+REMNASHOP_DSN='$REMNASHOP_DSN'
 EOF
-    sed -i -e '/^[A-Z_]*=$/d' -e '/^[A-Z_]*=""$/d' "$tmp"  # empty values -> defaults apply
+    sed -i -e '/^[A-Z_]*=$/d' -e '/^[A-Z_]*=""$/d' -e "/^[A-Z_]*=''$/d" "$tmp"  # empty -> defaults
     chown root:"$APP_USER" "$tmp"; chmod 640 "$tmp"
     mv -f "$tmp" "$ENV_FILE"
 }
@@ -393,6 +399,11 @@ if ! curl -fsS "http://127.0.0.1:$APP_PORT/healthz" >/dev/null 2>&1; then
     die "Служба не отвечает, смотрите журнал выше"
 fi
 
+if [[ -n "$REMNASHOP_DSN" ]]; then
+    info "Проверка подключения к БД бота"
+    kago check-bot-db || warn "БД бота недоступна или схема не подходит — панель покажет ошибку в «Интеграции». Исправьте REMNASHOP_DSN в $ENV_FILE и выполните: systemctl restart $SERVICE"
+fi
+
 CURL_K=""; (( HSTS )) || CURL_K="-k "
 echo
 echo "${c_bold}Панель установлена: $PUBLIC_URL${c_off}"
@@ -416,6 +427,7 @@ cat <<EOF
   Логи:        journalctl -u $SERVICE -f
   Обновление:  sudo bash $APP_DIR/deploy/install.sh
   Команды:     sudo kago list | create-admin LOGIN | set-password LOGIN | issue-token
+               sudo kago check-bot-db | sync-bot-db [--full]
 EOF
 if (( !HSTS )); then
     warn "Сертификат самоподписанный: браузер покажет предупреждение. Для бота закрепите сертификат:"

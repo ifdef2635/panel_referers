@@ -25,7 +25,7 @@ from pathlib import Path
 
 import httpx
 import psycopg
-from psycopg.rows import dict_row
+from psycopg.rows import dict_row, tuple_row
 
 log = logging.getLogger("remnashop_sync")
 BATCH = 500
@@ -177,6 +177,42 @@ def subscriptions(cur, since: datetime):
 
 COLLECTORS = {"users": users, "payments": payments, "subscriptions": subscriptions}
 
+# Columns the collectors read. information_schema only lists columns the role may SELECT,
+# so a missing entry means either an incompatible schema or missing grants.
+REQUIRED_COLUMNS = {
+    "users": ["id", "telegram_id", "username", "name", "language", "created_at", "updated_at",
+              "ad_link_id", "current_subscription_id"],
+    "referrals": ["referrer_id", "referred_id", "created_at"],
+    "transactions": ["payment_id", "user_id", "status", "is_test", "purchase_type", "gateway_type",
+                     "currency", "pricing", "plan_snapshot", "created_at", "updated_at"],
+    "subscriptions": ["id", "user_id", "status", "is_trial", "expire_at", "created_at", "updated_at"],
+    "ad_links": ["id", "name"],
+}
+
+
+def check_schema(conn) -> list[str]:
+    """Problems that prevent syncing; an empty list means the database looks like Remnashop."""
+    rows = conn.cursor(row_factory=tuple_row).execute(
+        """
+        SELECT table_name, column_name FROM information_schema.columns
+        WHERE table_schema = current_schema() AND table_name = ANY(%(t)s)
+        """,
+        {"t": list(REQUIRED_COLUMNS)},
+    ).fetchall()
+    conn.rollback()
+    have: dict[str, set[str]] = {}
+    for table, column in rows:
+        have.setdefault(table, set()).add(column)
+    problems = []
+    for table, columns in REQUIRED_COLUMNS.items():
+        if table not in have:
+            problems.append(f"нет таблицы {table} (или нет прав SELECT на неё)")
+            continue
+        missing = [c for c in columns if c not in have[table]]
+        if missing:
+            problems.append(f"{table}: нет колонок {', '.join(missing)} (или нет прав SELECT)")
+    return problems
+
 
 # --------------------------------------------------------------------------- sending
 
@@ -236,7 +272,8 @@ def save_state(path: Path, state: dict[str, datetime]) -> None:
     tmp.replace(path)
 
 
-def run_once(conn, sender: Sender, state: dict[str, datetime]) -> int:
+def run_once(conn, send, state: dict[str, datetime]) -> int:
+    """One pass over all collectors; `send(events)` delivers a list of events."""
     sent = 0
     for name, collect in COLLECTORS.items():
         since = state.get(name, EPOCH)
@@ -244,7 +281,7 @@ def run_once(conn, sender: Sender, state: dict[str, datetime]) -> int:
             events, top = collect(cur, since - OVERLAP if since > EPOCH else since)
         conn.rollback()  # end the read transaction
         if events:
-            sender.send(events)
+            send(events)
             sent += len(events)
         state[name] = max(top, since)
     return sent
@@ -272,7 +309,10 @@ def main() -> None:
     while True:
         try:
             with psycopg.connect(dsn, options="-c default_transaction_read_only=on") as conn:
-                n = run_once(conn, sender, state)
+                problems = check_schema(conn)
+                if problems:
+                    sys.exit("БД не похожа на Remnashop:\n  " + "\n  ".join(problems))
+                n = run_once(conn, sender.send, state)
             save_state(state_path, state)
             log.info("sent %d events, totals %s", n, sender.totals)
         except (psycopg.Error, RuntimeError) as exc:

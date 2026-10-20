@@ -13,7 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import get_settings
 from .db import SessionLocal, engine, init_db
 from .models import ROLE_ADMIN, Account
-from . import ingest
+from . import botdb, ingest
 from .routes import admin, auth, partner
 from .security import hash_password
 from .web import BASE_DIR, LoginRequired, render
@@ -44,7 +44,9 @@ def bootstrap_admin() -> None:
 async def lifespan(_: FastAPI):
     init_db()
     bootstrap_admin()
+    botdb.start()
     yield
+    botdb.stop()
 
 
 settings = get_settings()

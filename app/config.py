@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     session_max_age: int = 60 * 60 * 24 * 7
     stats_cache_seconds: int = 30
 
+    # Optional direct connection to the bot database (Remnashop PostgreSQL), read-only is enough.
+    # When set, the panel pulls changes from it in the background (see app/botdb.py).
+    remnashop_dsn: str = ""
+    remnashop_sync_seconds: int = 60
+
     # Optional bootstrap admin, created on startup if no admin exists yet.
     admin_login: str | None = None
     admin_password: str | None = None

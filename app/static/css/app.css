@@ -192,3 +192,4 @@ pre.code {
   padding: 10px 12px; overflow-x: auto; white-space: pre; font-size: 12px; margin: 6px 0;
 }
 .big.sm-big { font-size: 15px; }
+.row-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }

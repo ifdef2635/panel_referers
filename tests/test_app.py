@@ -167,11 +167,11 @@ def test_remnashop_sync_and_ui(app_client, token, tmp_path):
     c.headers["Authorization"] = f"Bearer {token}"
     state: dict = {}
     with psycopg.connect(RS_DSN) as conn:
-        sent = remnashop_sync.run_once(conn, sender, state)
+        sent = remnashop_sync.run_once(conn, sender.send, state)
         assert sent > 0 and sender.totals["errors"] == 0
         # second pass only re-reads the overlap window: nothing new is accepted
         before = sender.totals["accepted"]
-        remnashop_sync.run_once(conn, sender, state)
+        remnashop_sync.run_once(conn, sender.send, state)
         assert sender.totals["accepted"] == before
     del c.headers["Authorization"]
 
@@ -247,3 +247,48 @@ def test_remnashop_sync_and_ui(app_client, token, tmp_path):
     assert users.status_code == 200 and not re.search(r"@user\d", users.text) and "Юзер" not in users.text
     rewards = c.get("/p/rewards")
     assert "К выдаче" in rewards.text and str(due - 3) in rewards.text
+
+
+@pytest.mark.skipif(not RS_DSN, reason="TEST_REMNASHOP_DSN is not set")
+def test_direct_bot_db_sync(app_client):
+    import psycopg
+
+    from app import analytics as rs
+    from app import botdb
+    from app.config import get_settings
+    from app.db import engine
+    from app.services import resolve_period
+
+    c = app_client
+    settings = get_settings()
+    with engine.begin() as conn:
+        conn.exec_driver_sql("TRUNCATE events, bot_users, payments, subscriptions, devices")
+    try:
+        # a database that is not Remnashop is refused with a clear message
+        settings.remnashop_dsn = DB_URL.replace("+psycopg", "")
+        botdb.reset_cursors()
+        summary = botdb.sync_once()
+        assert summary["error"] and "нет таблицы referrals" in summary["error"]
+
+        settings.remnashop_dsn = RS_DSN
+        botdb.reset_cursors()
+        info = botdb.check()
+        assert info["problems"] == [] and info["counts"]["users"] > 0
+        summary = botdb.sync_once()
+        assert summary["error"] is None and summary["accepted"] > 0 and summary["errors"] == 0
+        assert botdb.sync_once()["accepted"] == 0  # only the overlap window is re-read
+
+        with psycopg.connect(RS_DSN) as conn:
+            users_n = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+        period = resolve_period("all", None, None)
+        assert rs.overview(rs.Scope(all_users=True), period.start, period.end)["users_total"] == users_n
+
+        login(c, "admin", "adminpass123")
+        page = c.get("/admin/integrations")
+        assert "Подключение к БД бота" in page.text and "работает" in page.text
+        r = c.post("/admin/integrations/botdb/check", data={"csrf": csrf(page.text)})
+        assert "Подключение работает" in r.text
+        r = c.post("/admin/integrations/botdb/sync", data={"csrf": csrf(page.text), "full": "true"})
+        assert "Полная пересинхронизация запущена" in r.text
+    finally:
+        settings.remnashop_dsn = ""

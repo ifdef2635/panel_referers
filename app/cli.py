@@ -5,6 +5,8 @@
     python -m app.cli list
     python -m app.cli has-admin   (exit code 0 if an admin exists)
     python -m app.cli issue-token   (new ingest token for the bot; the old one stops working)
+    python -m app.cli check-bot-db  (connection + schema check of REMNASHOP_DSN)
+    python -m app.cli sync-bot-db [--full]
 """
 
 import argparse
@@ -42,6 +44,9 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("list")
     sub.add_parser("has-admin")
     sub.add_parser("issue-token")
+    sub.add_parser("check-bot-db")
+    sp = sub.add_parser("sync-bot-db")
+    sp.add_argument("--full", action="store_true", help="re-read the whole history")
     args = parser.parse_args(argv)
 
     init_db()
@@ -75,7 +80,36 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if db.scalar(select(Account).where(Account.role == ROLE_ADMIN)) else 1
         elif args.cmd == "issue-token":
             print(issue_token(db))
+        elif args.cmd in ("check-bot-db", "sync-bot-db"):
+            return _bot_db(args)
     return 0
+
+
+def _bot_db(args) -> int:
+    from . import botdb
+
+    if not botdb.enabled():
+        print("REMNASHOP_DSN не задан", file=sys.stderr)
+        return 1
+    if args.cmd == "check-bot-db":
+        try:
+            info = botdb.check()
+        except Exception as exc:
+            print(f"Нет подключения к {botdb.masked_dsn()}: {exc}", file=sys.stderr)
+            return 1
+        print(f"Подключено: {info['user']}@{info['db']} ({info['version'].split(',')[0]})")
+        print(f"Миграция Remnashop: {info.get('migration') or 'не найдена'}")
+        if info["problems"]:
+            print("Схема не подходит:\n  " + "\n  ".join(info["problems"]), file=sys.stderr)
+            return 1
+        for table, n in info["counts"].items():
+            print(f"  {table:<14} {n}")
+        return 0
+    if args.full:
+        botdb.reset_cursors()
+    summary = botdb.sync_once()
+    print(summary)
+    return 1 if summary.get("error") else 0
 
 
 if __name__ == "__main__":
