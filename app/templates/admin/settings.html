@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Настройки{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Настройки</h1></div>
+<div class="grid2">
+  <section class="card">
+    <h3>Вознаграждение</h3>
+    <form method="post" action="/admin/settings" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Дней подписки за одного купившего (по умолчанию)
+        <input type="number" name="reward_days" min="0" max="3650" value="{{ default_days }}" required>
+      </label>
+      <p class="muted sm">Применяется ко всем партнёрам без индивидуальной ставки. Начисления считаются по текущей ставке, поэтому её изменение пересчитывает и уже начисленные дни.</p>
+      <button class="btn primary">Сохранить</button>
+    </form>
+  </section>
+  <section class="card">
+    <h3>Состояние</h3>
+    <dl class="dl">
+      <dt>БД Remnashop</dt><dd>{% if db_ok %}<span class="badge ok">подключена</span>{% else %}<span class="badge off">нет связи</span>{% endif %}</dd>
+    </dl>
+    <form method="post" action="/admin/cache/clear" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn">Сбросить кэш статистики</button>
+      <p class="muted sm">Статистика кэшируется на короткое время, чтобы не нагружать БД бота.</p>
+    </form>
+  </section>
+</div>
+{% endblock %}

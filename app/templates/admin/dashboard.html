@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% from "macros.html" import period_picker, kpis, chart_block, payments_table, money_list with context %}
+{% block title %}Обзор — {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Общая статистика</h1><span class="muted">{{ period.label }}</span></div>
+{{ period_picker(period, "/admin") }}
+{{ kpis(stats, period) }}
+{{ chart_block(chart) }}
+
+<section class="card">
+  <div class="card-head"><h3>Партнёры за период</h3><span class="muted sm">к выдаче всего: <b>{{ due_total|days }}</b></span></div>
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th>Партнёр</th><th class="r">Регистрации</th><th class="r">Новые покупатели</th><th class="r">Конверсия</th><th class="r">Выручка</th><th class="r">Активных</th><th class="r">К выдаче, дн.</th></tr></thead>
+    <tbody>
+    {% for r in board %}
+      <tr>
+        <td><a href="/admin/partners/{{ r.partner.id }}?period={{ period.key }}{% if period.key == 'custom' %}&from={{ period.date_from }}&to={{ period.date_to }}{% endif %}">{{ r.partner.name }}</a></td>
+        <td class="r">{{ r.stats.registrations|num }}</td>
+        <td class="r">{{ r.stats.new_buyers|num }}</td>
+        <td class="r">{{ r.stats.conversion }}%</td>
+        <td class="r">{{ money_list(r.stats.revenue) }}</td>
+        <td class="r">{{ r.stats.active_paid|num }}</td>
+        <td class="r"><b class="{{ 'pos' if r.balance.due > 0 }}">{{ r.balance.due|num }}</b></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="empty">Партнёров нет — <a href="/admin/partners/new">добавить</a></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<div class="grid2">
+  <section class="card">
+    <h3>Источники пользователей</h3>
+    <table class="table">
+      <thead><tr><th>Источник</th><th class="r">Регистрации</th><th class="r">Новые покупатели</th></tr></thead>
+      <tbody>
+      {% for s in sources %}
+        <tr><td>{{ VIA.get(s.via, s.via) }}</td><td class="r">{{ s.registrations|num }}</td><td class="r">{{ s.new_buyers|num }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  <section class="card">
+    <h3>Платёжные системы</h3>
+    <table class="table">
+      <thead><tr><th>Шлюз</th><th class="r">Оплат</th><th class="r">Сумма</th></tr></thead>
+      <tbody>
+      {% for g in gateways %}
+        <tr><td>{{ GATEWAYS.get(g.key, g.key|title) }}</td><td class="r">{{ g.payments|num }}</td><td class="r">{{ g.total|money(g.currency) }}</td></tr>
+      {% else %}<tr><td colspan="3" class="empty">Нет оплат</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </section>
+  <section class="card">
+    <h3>Тарифы</h3>
+    <table class="table">
+      <thead><tr><th>Тариф</th><th class="r">Оплат</th><th class="r">Покупателей</th><th class="r">Сумма</th></tr></thead>
+      <tbody>
+      {% for g in plans %}
+        <tr><td>{{ g.key }}</td><td class="r">{{ g.payments|num }}</td><td class="r">{{ g.buyers|num }}</td><td class="r">{{ g.total|money(g.currency) }}</td></tr>
+      {% else %}<tr><td colspan="4" class="empty">Нет оплат</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </section>
+  <section class="card">
+    <h3>Тип покупки</h3>
+    <table class="table">
+      <thead><tr><th>Тип</th><th class="r">Оплат</th><th class="r">Сумма</th></tr></thead>
+      <tbody>
+      {% for g in purchase_types %}
+        <tr><td>{{ PURCHASE_TYPES.get(g.key, g.key) }}</td><td class="r">{{ g.payments|num }}</td><td class="r">{{ g.total|money(g.currency) }}</td></tr>
+      {% else %}<tr><td colspan="3" class="empty">Нет оплат</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<section class="card">
+  <h3>Последние оплаты</h3>
+  {{ payments_table(recent, True, True) }}
+</section>
+{% endblock %}

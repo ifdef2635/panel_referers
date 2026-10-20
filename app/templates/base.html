@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ app_name }}{% endblock %}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/app.css?v=1">
+  <script src="/static/js/chart.umd.js" defer></script>
+  <script src="/static/js/app.js?v=1" defer></script>
+</head>
+<body>
+{% if me %}
+<header class="topbar">
+  <a class="brand" href="/">{{ app_name }}</a>
+  <nav class="nav">
+    {% set path = request.url.path %}
+    {% if me.is_admin %}
+      <a href="/admin" class="{{ 'active' if path == '/admin' }}">Обзор</a>
+      <a href="/admin/partners" class="{{ 'active' if path.startswith('/admin/partners') }}">Партнёры</a>
+      <a href="/admin/payouts" class="{{ 'active' if path.startswith('/admin/payouts') }}">Выдачи</a>
+      <a href="/admin/users" class="{{ 'active' if path.startswith('/admin/users') }}">Пользователи</a>
+      <a href="/admin/referrers" class="{{ 'active' if path.startswith('/admin/referrers') }}">Рефереры</a>
+      <a href="/admin/settings" class="{{ 'active' if path.startswith('/admin/settings') }}">Настройки</a>
+    {% else %}
+      <a href="/p" class="{{ 'active' if path == '/p' }}">Статистика</a>
+      <a href="/p/users" class="{{ 'active' if path.startswith('/p/users') }}">Мои пользователи</a>
+      <a href="/p/rewards" class="{{ 'active' if path.startswith('/p/rewards') }}">Вознаграждение</a>
+    {% endif %}
+  </nav>
+  <div class="me">
+    <a href="/account" class="muted">{{ me.name or me.login }}</a>
+    <form method="post" action="/logout" class="inline">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn ghost sm">Выйти</button>
+    </form>
+  </div>
+</header>
+{% endif %}
+<main class="container">
+  {% for kind, msg in flashes %}
+    <div class="flash {{ kind }}">{{ msg }}</div>
+  {% endfor %}
+  {% block content %}{% endblock %}
+</main>
+</body>
+</html>

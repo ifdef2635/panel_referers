@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Аккаунт{% endblock %}
+{% block content %}
+<h1>Аккаунт</h1>
+<div class="grid2">
+  <section class="card">
+    <h3>Профиль</h3>
+    <dl class="dl">
+      <dt>Логин</dt><dd>{{ me.login }}</dd>
+      <dt>Имя</dt><dd>{{ me.name }}</dd>
+      <dt>Роль</dt><dd>{{ 'Администратор' if me.is_admin else 'Партнёр' }}</dd>
+      <dt>Последний вход</dt><dd>{{ me.last_login_at|dt }}</dd>
+    </dl>
+  </section>
+  <section class="card">
+    <h3>Смена пароля</h3>
+    <form method="post" action="/account/password" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Текущий пароль<input type="password" name="current" autocomplete="current-password" required></label>
+      <label>Новый пароль<input type="password" name="new" minlength="8" autocomplete="new-password" required></label>
+      <label>Повторите<input type="password" name="repeat" minlength="8" autocomplete="new-password" required></label>
+      <button class="btn primary">Сменить пароль</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

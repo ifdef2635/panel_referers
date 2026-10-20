@@ -1,0 +1,12 @@
+<div class="page-head">
+  <div>
+    <a class="muted sm" href="/admin/partners">← Партнёры</a>
+    <h1>{{ partner.name }} <span class="muted">· {{ partner.login }}</span>
+      {% if not partner.is_active %}<span class="badge off">отключён</span>{% endif %}</h1>
+  </div>
+</div>
+<nav class="tabs">
+  <a href="/admin/partners/{{ partner.id }}" class="{{ 'active' if tab == 'stats' }}">Статистика</a>
+  <a href="/admin/partners/{{ partner.id }}/users" class="{{ 'active' if tab == 'users' }}">Пользователи</a>
+  <a href="/admin/partners/{{ partner.id }}/settings" class="{{ 'active' if tab == 'settings' }}">Настройки, источники, выдачи</a>
+</nav>

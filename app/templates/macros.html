@@ -1,0 +1,186 @@
+{% macro period_picker(period, action) %}
+<form class="period" method="get" action="{{ action }}">
+  <div class="chips">
+    {% for key, label in PRESETS.items() %}
+      <a class="chip {{ 'active' if period.key == key }}" href="{{ action }}?period={{ key }}">{{ label }}</a>
+    {% endfor %}
+  </div>
+  <div class="custom">
+    <input type="hidden" name="period" value="custom">
+    <input type="date" name="from" value="{{ period.date_from.isoformat() }}" aria-label="С">
+    <span class="muted">—</span>
+    <input type="date" name="to" value="{{ period.date_to.isoformat() }}" aria-label="По">
+    <button class="btn sm">Показать</button>
+  </div>
+</form>
+{% endmacro %}
+
+{% macro money_list(revenue) %}
+  {% if revenue %}
+    {% for cur, amount in revenue.items() %}<div>{{ amount|money(cur) }}</div>{% endfor %}
+  {% else %}<div>0</div>{% endif %}
+{% endmacro %}
+
+{% macro kpis(stats, period, rate=None) %}
+<div class="kpis">
+  <div class="kpi">
+    <div class="kpi-label">Регистрации</div>
+    <div class="kpi-value">{{ stats.registrations|num }}</div>
+    <div class="kpi-sub">всего: {{ stats.users_total|num }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Новые покупатели</div>
+    <div class="kpi-value">{{ stats.new_buyers|num }}</div>
+    <div class="kpi-sub">впервые оплатили за период</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Конверсия в покупку</div>
+    <div class="kpi-value">{{ stats.conversion }}%</div>
+    <div class="kpi-sub">{{ stats.converted|num }} из {{ stats.registrations|num }} регистраций</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Оплаты</div>
+    <div class="kpi-value">{{ stats.payments|num }}</div>
+    <div class="kpi-sub">{{ stats.buyers|num }} {{ plural(stats.buyers, 'покупатель', 'покупателя', 'покупателей') }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Выручка</div>
+    <div class="kpi-value money">{{ money_list(stats.revenue) }}</div>
+  </div>
+  <div class="kpi">
+    <div class="kpi-label">Активные подписки</div>
+    <div class="kpi-value">{{ stats.active_paid|num }}</div>
+    <div class="kpi-sub">+ {{ stats.active_trial|num }} на триале · триалов за период: {{ stats.trials|num }}</div>
+  </div>
+  {% if rate is not none %}
+  <div class="kpi accent">
+    <div class="kpi-label">Заработано за период</div>
+    <div class="kpi-value">{{ (stats.new_buyers * rate)|days }}</div>
+    <div class="kpi-sub">{{ rate }} дн. × {{ stats.new_buyers|num }} покупателей</div>
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro chart_block(chart) %}
+{% if chart %}
+<div class="grid2">
+  <section class="card">
+    <h3>Регистрации и новые покупатели</h3>
+    <div class="chart"><canvas data-chart="activity"></canvas></div>
+  </section>
+  <section class="card">
+    <h3>Выручка</h3>
+    <div class="chart"><canvas data-chart="revenue"></canvas></div>
+  </section>
+</div>
+<script type="application/json" id="chart-data">{{ chart|tojson }}</script>
+{% endif %}
+{% endmacro %}
+
+{% macro balance_card(balance, show_hint=True) %}
+<section class="card balance">
+  <h3>Вознаграждение (дни подписки)</h3>
+  <div class="balance-grid">
+    <div><div class="kpi-label">Ставка</div><div class="big">{{ balance.rate }} дн.</div><div class="muted sm">за каждого купившего</div></div>
+    <div><div class="kpi-label">Купивших всего</div><div class="big">{{ balance.buyers|num }}</div></div>
+    <div><div class="kpi-label">Начислено</div><div class="big">{{ balance.accrued|days }}</div></div>
+    <div><div class="kpi-label">Выдано</div><div class="big">{{ balance.issued|days }}</div></div>
+    <div class="due {{ 'pos' if balance.due > 0 }}"><div class="kpi-label">К выдаче</div><div class="big">{{ balance.due|days }}</div></div>
+  </div>
+  {% if show_hint %}<p class="muted sm">Начисление — один раз за каждого приведённого пользователя, совершившего хотя бы одну оплату подписки. Возврат платежа отменяет начисление.</p>{% endif %}
+</section>
+{% endmacro %}
+
+{% macro pager(page, pages, base) %}
+{% if pages > 1 %}
+<nav class="pager">
+  {% set qs = query.copy() %}
+  {% if page > 1 %}{% set _ = qs.update(page=page-1) %}<a class="btn ghost sm" href="{{ base }}?{{ qs|urlencode }}">←</a>{% endif %}
+  <span class="muted">стр. {{ page }} из {{ pages }}</span>
+  {% if page < pages %}{% set _ = qs.update(page=page+1) %}<a class="btn ghost sm" href="{{ base }}?{{ qs|urlencode }}">→</a>{% endif %}
+</nav>
+{% endif %}
+{% endmacro %}
+
+{% macro sub_badge(row) %}
+  {% if row.sub_status %}
+    {% set active = row.sub_status == 'ACTIVE' %}
+    <span class="badge {{ 'ok' if active and not row.is_trial else ('trial' if active else 'off') }}">
+      {{ 'Триал' if row.is_trial and active else SUB_STATUS.get(row.sub_status, row.sub_status) }}
+    </span>
+    {% if row.expire_at %}<div class="muted sm">до {{ row.expire_at|date }}</div>{% endif %}
+  {% else %}<span class="muted">нет</span>{% endif %}
+{% endmacro %}
+
+{% macro users_table(rows, reveal, show_via=True, show_referrer=False) %}
+<div class="table-wrap">
+<table class="table">
+  <thead><tr>
+    <th>Пользователь</th><th>Регистрация</th>{% if show_via %}<th>Откуда</th>{% endif %}
+    <th>Подписка</th><th>Первая оплата</th><th class="r">Оплат</th><th class="r">Сумма</th>
+  </tr></thead>
+  <tbody>
+  {% for r in rows %}
+    {% set w = who(r, reveal) %}
+    <tr>
+      <td>
+        <div>{{ w.name }}</div>
+        {% if w.username %}<div class="muted sm">@{{ w.username }}</div>{% endif %}
+        {% if w.tg %}<div class="muted sm">tg {{ w.tg }}</div>{% endif %}
+      </td>
+      <td>{{ r.created_at|dt }}</td>
+      {% if show_via %}<td>
+        <span class="badge plain">{{ VIA.get(r.via, r.via) }}</span>
+        {% if show_referrer and r.referrer_id %}<div class="muted sm">от {{ r.referrer_name or ('@' ~ r.referrer_username) }}</div>{% endif %}
+        {% if r.ad_link_name and (show_referrer or r.via == 'ad_link') %}<div class="muted sm">{{ r.ad_link_name }}</div>{% endif %}
+      </td>{% endif %}
+      <td>{{ sub_badge(r) }}</td>
+      <td>{{ r.first_paid_at|dt if r.first_paid_at else '—' }}</td>
+      <td class="r">{{ r.payments|num }}</td>
+      <td class="r">{% if r.spent %}{% for cur, amt in r.spent.items() %}<div>{{ amt|money(cur) }}</div>{% endfor %}{% else %}—{% endif %}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="7" class="empty">Пока никого нет</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}
+
+{% macro users_filters(base, flt, search, total) %}
+<form class="filters" method="get" action="{{ base }}">
+  <input type="search" name="q" value="{{ search }}" placeholder="Поиск: имя, @username, Telegram ID">
+  <select name="filter">
+    {% for key, label in [('all','Все'),('buyers','Купившие'),('no_purchase','Без покупки'),('active','Активная подписка'),('trial','На триале')] %}
+      <option value="{{ key }}" {{ 'selected' if flt == key }}>{{ label }}</option>
+    {% endfor %}
+  </select>
+  <button class="btn sm">Найти</button>
+  <span class="muted">Найдено: {{ total|num }}</span>
+</form>
+{% endmacro %}
+
+{% macro payments_table(rows, reveal, show_via=False) %}
+<div class="table-wrap">
+<table class="table">
+  <thead><tr><th>Дата</th><th>Пользователь</th>{% if show_via %}<th>Откуда</th>{% endif %}<th>Тариф</th><th>Тип</th><th class="r">Сумма</th></tr></thead>
+  <tbody>
+  {% for r in rows %}
+    {% set w = who(r, reveal) %}
+    <tr>
+      <td>{{ r.created_at|dt }}</td>
+      <td>{{ w.name }}{% if w.username %} <span class="muted sm">@{{ w.username }}</span>{% endif %}
+        {% if r.is_first %}<span class="badge ok">первая</span>{% endif %}</td>
+      {% if show_via %}<td><span class="badge plain">{{ VIA.get(r.via, r.via) }}</span></td>{% endif %}
+      <td>{{ r.plan }}</td>
+      <td>{{ PURCHASE_TYPES.get(r.purchase_type, r.purchase_type) }}</td>
+      <td class="r">{{ r.amount|money(r.currency) }}</td>
+    </tr>
+  {% else %}
+    <tr><td colspan="6" class="empty">Оплат пока нет</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% endmacro %}

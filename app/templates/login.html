@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Вход — {{ app_name }}{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <form class="card login" method="post" action="/login">
+    <h1>{{ app_name }}</h1>
+    <p class="muted">Вход в кабинет партнёра</p>
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label>Логин<input name="login" autocomplete="username" required autofocus></label>
+    <label>Пароль<input name="password" type="password" autocomplete="current-password" required></label>
+    <button class="btn primary wide">Войти</button>
+  </form>
+</div>
+{% endblock %}

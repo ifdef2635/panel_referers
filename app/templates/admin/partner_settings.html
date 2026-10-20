@@ -1,0 +1,134 @@
+{% extends "base.html" %}
+{% from "macros.html" import balance_card with context %}
+{% block title %}{{ partner.name }} — настройки{% endblock %}
+{% block content %}
+{% include "admin/_partner_head.html" %}
+{% if db_error %}<div class="flash error">Нет связи с БД Remnashop: {{ db_error }}</div>{% endif %}
+
+{{ balance_card(balance, False) }}
+
+<div class="grid2">
+  <section class="card">
+    <h3>Выдать дни</h3>
+    <form method="post" action="/admin/partners/{{ partner.id }}/payouts" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Количество дней
+        <input type="number" name="days" value="{{ balance.due if balance.due > 0 else '' }}" required>
+      </label>
+      <label>Комментарий<input name="note" maxlength="255" placeholder="напр. продлено в боте"></label>
+      <button class="btn primary">Записать выдачу</button>
+      <p class="muted sm">Сначала начислите дни партнёру в боте Remnashop{% if partner.telegram_id %} (Telegram ID {{ partner.telegram_id }}){% endif %}, затем запишите выдачу здесь. Отрицательное число — корректировка.</p>
+    </form>
+  </section>
+
+  <section class="card">
+    <h3>История выдач</h3>
+    <div class="table-wrap">
+    <table class="table">
+      <thead><tr><th>Дата</th><th class="r">Дней</th><th>Комментарий</th><th></th></tr></thead>
+      <tbody>
+      {% for p in partner.payouts %}
+        <tr>
+          <td>{{ p.created_at|dt }}</td><td class="r">{{ p.days|num }}</td><td>{{ p.note or '—' }}</td>
+          <td class="r">
+            <form method="post" action="/admin/payouts/{{ p.id }}/delete" data-confirm="Удалить запись о выдаче?">
+              <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn ghost sm danger">×</button>
+            </form>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="4" class="empty">Выдач не было</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    </div>
+  </section>
+</div>
+
+<section class="card">
+  <h3>Источники трафика</h3>
+  <p class="muted sm">Пользователи, пришедшие через эти источники, считаются приведёнными партнёром. Источник может принадлежать только одному партнёру.</p>
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th>Тип</th><th>Источник</th><th>ID в Remnashop</th><th>Добавлен</th><th></th></tr></thead>
+    <tbody>
+    {% for s in partner.sources %}
+      <tr>
+        <td><span class="badge plain">{{ 'Реферальная ссылка' if s.kind == 'referrer' else 'Рекламная ссылка' }}</span></td>
+        <td>{{ s.label }}</td><td>{{ s.ref_id }}</td><td>{{ s.created_at|date }}</td>
+        <td class="r">
+          <form method="post" action="/admin/partners/{{ partner.id }}/sources/{{ s.id }}/delete" data-confirm="Отвязать источник?">
+            <input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn ghost sm danger">Отвязать</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="empty">Источников нет</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <div class="grid2">
+    <form method="post" action="/admin/partners/{{ partner.id }}/sources" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="kind" value="referrer">
+      <label>Реферер (пользователь бота, чья реф. ссылка)
+        <input name="query" placeholder="Telegram ID, @username или реф. код" required>
+      </label>
+      <button class="btn">Привязать реферера</button>
+    </form>
+    <form method="post" action="/admin/partners/{{ partner.id }}/sources" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="kind" value="ad_link">
+      <label>Рекламная ссылка Remnashop
+        <select name="ad_link_id" required>
+          <option value="">— выберите —</option>
+          {% for a in ad_links %}
+            {% set owner = taken_links.get(a.id) %}
+            <option value="{{ a.id }}" {{ 'disabled' if owner }}>{{ a.name }} ({{ a.code }}) · {{ a.users }} польз.{{ ' · занята' if owner }}{{ ' · неактивна' if not a.is_active }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="btn">Привязать ссылку</button>
+    </form>
+  </div>
+</section>
+
+<div class="grid2">
+  <section class="card">
+    <h3>Параметры партнёра</h3>
+    <form method="post" action="/admin/partners/{{ partner.id }}/edit" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Имя<input name="name" value="{{ partner.name }}" maxlength="128"></label>
+      <label>Telegram ID партнёра (куда выдавать дни)<input name="telegram_id" value="{{ partner.telegram_id or '' }}" inputmode="numeric"></label>
+      <label>Дней за одного купившего
+        <input type="number" name="reward_days" min="0" value="{{ partner.reward_days if partner.reward_days is not none else '' }}" placeholder="по умолчанию: {{ default_days }}">
+      </label>
+      <label class="check"><input type="checkbox" name="include_second_level" value="true" {{ 'checked' if partner.include_second_level }}> Учитывать рефералов 2-го уровня</label>
+      <label class="check"><input type="checkbox" name="show_contacts" value="true" {{ 'checked' if partner.show_contacts }}> Показывать партнёру имена и @username пользователей</label>
+      <label class="check"><input type="checkbox" name="is_active" value="true" {{ 'checked' if partner.is_active }}> Доступ в кабинет включён</label>
+      <label>Заметка (видна только админу)<textarea name="note" rows="3">{{ partner.note }}</textarea></label>
+      <button class="btn primary">Сохранить</button>
+    </form>
+  </section>
+  <section class="card">
+    <h3>Доступ</h3>
+    <dl class="dl">
+      <dt>Логин</dt><dd>{{ partner.login }}</dd>
+      <dt>Создан</dt><dd>{{ partner.created_at|dt }}</dd>
+      <dt>Последний вход</dt><dd>{{ partner.last_login_at|dt }}</dd>
+    </dl>
+    <form method="post" action="/admin/partners/{{ partner.id }}/password" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Новый пароль<input name="password" minlength="8" required autocomplete="new-password"></label>
+      <button class="btn">Сменить пароль</button>
+    </form>
+    <hr>
+    <form method="post" action="/admin/partners/{{ partner.id }}/delete" class="form">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label>Удаление: введите логин «{{ partner.login }}»<input name="confirm" autocomplete="off"></label>
+      <button class="btn danger">Удалить партнёра</button>
+    </form>
+  </section>
+</div>
+{% endblock %}

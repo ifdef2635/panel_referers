@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Партнёры{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Партнёры</h1><a class="btn primary" href="/admin/partners/new">+ Добавить</a></div>
+<section class="card">
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th>Партнёр</th><th>Источники</th><th class="r">Купивших</th><th class="r">Ставка</th><th class="r">Начислено</th><th class="r">Выдано</th><th class="r">К выдаче</th><th>Вход</th></tr></thead>
+    <tbody>
+    {% for r in rows %}
+      {% set p = r.partner %}{% set b = r.balance %}
+      <tr>
+        <td><a href="/admin/partners/{{ p.id }}">{{ p.name }}</a> <span class="muted sm">{{ p.login }}</span>
+          {% if not p.is_active %}<span class="badge off">откл.</span>{% endif %}</td>
+        <td>{% for s in p.sources %}<div class="sm">{{ '👤' if s.kind == 'referrer' else '🔗' }} {{ s.label }}</div>{% else %}<span class="muted">—</span>{% endfor %}</td>
+        <td class="r">{{ b.buyers|num }}</td>
+        <td class="r">{{ b.rate }}</td>
+        <td class="r">{{ b.accrued|num }}</td>
+        <td class="r">{{ b.issued|num }}</td>
+        <td class="r"><b class="{{ 'pos' if b.due > 0 }}">{{ b.due|num }}</b></td>
+        <td class="sm">{{ p.last_login_at|dt }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="8" class="empty">Партнёров пока нет. <a href="/admin/referrers">Посмотреть активных рефереров →</a></td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% from "macros.html" import users_table, users_filters, pager with context %}
+{% block title %}{{ partner.name }} — пользователи{% endblock %}
+{% block content %}
+{% include "admin/_partner_head.html" %}
+{% set base = "/admin/partners/" ~ partner.id ~ "/users" %}
+{{ users_filters(base, flt, search, total) }}
+{{ users_table(rows, True, True, True) }}
+{{ pager(page, pages, base) }}
+{% endblock %}

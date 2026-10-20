@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}Статистика — {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Статистика</h1><span class="muted">{{ period.label }}</span></div>
+{% set base = "/p" %}
+{% include "partner/_dashboard_body.html" %}
+{% endblock %}

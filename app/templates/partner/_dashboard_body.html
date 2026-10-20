@@ -1,0 +1,19 @@
+{% from "macros.html" import period_picker, kpis, chart_block, balance_card, payments_table with context %}
+{% if no_sources %}
+  <div class="card notice">
+    {% if me.is_admin %}
+      У партнёра нет привязанных источников. Добавьте реферера или рекламную ссылку во вкладке <a href="/admin/partners/{{ partner.id }}/settings">«Настройки»</a>.
+    {% else %}
+      К вашему аккаунту ещё не привязаны источники трафика. Обратитесь к администратору.
+    {% endif %}
+  </div>
+{% else %}
+  {{ period_picker(period, base) }}
+  {{ kpis(stats, period, balance.rate) }}
+  {{ chart_block(chart) }}
+  {{ balance_card(balance) }}
+  <section class="card">
+    <h3>Последние оплаты</h3>
+    {{ payments_table(recent, me.is_admin or partner.show_contacts) }}
+  </section>
+{% endif %}

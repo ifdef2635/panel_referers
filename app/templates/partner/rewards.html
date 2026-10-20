@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% from "macros.html" import balance_card with context %}
+{% block title %}Вознаграждение — {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Вознаграждение</h1></div>
+{{ balance_card(balance) }}
+<section class="card">
+  <h3>История выдач</h3>
+  <div class="table-wrap">
+  <table class="table">
+    <thead><tr><th>Дата</th><th class="r">Дней</th><th>Комментарий</th></tr></thead>
+    <tbody>
+    {% for p in partner.payouts %}
+      <tr><td>{{ p.created_at|dt }}</td><td class="r">{{ p.days|num }}</td><td>{{ p.note or '—' }}</td></tr>
+    {% else %}
+      <tr><td colspan="3" class="empty">Выдач пока не было</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endblock %}

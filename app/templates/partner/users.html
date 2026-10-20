@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% from "macros.html" import users_table, users_filters, pager with context %}
+{% block title %}Мои пользователи — {{ app_name }}{% endblock %}
+{% block content %}
+<div class="page-head"><h1>Мои пользователи</h1></div>
+{{ users_filters("/p/users", flt, search, total) }}
+{{ users_table(rows, partner.show_contacts) }}
+{{ pager(page, pages, "/p/users") }}
+{% if not partner.show_contacts %}<p class="muted sm">Контакты пользователей скрыты администратором.</p>{% endif %}
+{% endblock %}

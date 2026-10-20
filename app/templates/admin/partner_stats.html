@@ -1,0 +1,7 @@
+{% extends "base.html" %}
+{% block title %}{{ partner.name }} — статистика{% endblock %}
+{% block content %}
+{% include "admin/_partner_head.html" %}
+{% set base = "/admin/partners/" ~ partner.id %}
+{% include "partner/_dashboard_body.html" %}
+{% endblock %}
