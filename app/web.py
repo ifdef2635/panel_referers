@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from .config import get_settings
 from .db import get_db
-from .models import Account
+from .models import PAYOUT_LABELS, Account
 from .security import new_csrf_token
 from .services import PRESETS
 
@@ -121,6 +121,7 @@ templates.env.filters.update(
 templates.env.globals.update(
     SUB_STATUS=SUB_STATUS,
     VIA=VIA,
+    PAYOUT_STATUS=PAYOUT_LABELS,
     GATEWAYS=GATEWAYS,
     PURCHASE_TYPES=PURCHASE_TYPES,
     PRESETS=PRESETS,

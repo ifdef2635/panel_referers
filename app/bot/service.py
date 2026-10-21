@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from .. import analytics as rs
+from .. import payouts as po
 from ..db import SessionLocal, fetch_all, fetch_one
 from ..models import ROLE_PARTNER, Account, BotContact, Invite, Payout, utcnow
 from ..security import hash_password
@@ -52,6 +53,7 @@ class Referrer:
     link: str
     clicks: int  # people who opened the link (registered in the VPN bot or not)
     username: str | None
+    open_payouts: list[Payout]  # queued / in progress / failed
 
 
 # --------------------------------------------------------------------------- links & contacts
@@ -140,6 +142,7 @@ def _view(db, p: Account, defaults: RewardRules | None = None, clicks: dict | No
         link=invite_link(db, p),
         clicks=clicks.get(p.id, 0),
         username=username,
+        open_payouts=po.open_payouts(db, p.id),
     )
 
 
@@ -257,14 +260,53 @@ def reset_password(partner_id: int) -> tuple[str, str]:
         return p.login, password
 
 
-def add_payout(partner_id: int, days: int, note: str = "через Telegram-бот") -> Referrer:
-    if days == 0 or abs(days) > 100000:
-        raise BotError("Количество дней: целое число, не ноль")
+def add_payout(partner_id: int, days: int, note: str = "через Telegram-бот") -> tuple[Referrer, Payout]:
+    """Queued for kago-sync in auto-delivery mode, otherwise recorded as issued."""
     with SessionLocal() as db:
         p = _load(db, partner_id)
-        db.add(Payout(partner_id=p.id, days=days, note=note[:255]))
+        try:
+            payout = po.request_payout(db, p, days, note)
+        except po.PayoutError as exc:
+            raise BotError(str(exc)) from None
+        return _view(db, p), payout
+
+
+def payout_action(payout_id: int, action: str) -> Payout:
+    """retry / cancel / done (added by hand) for a payout kago-sync failed or did not finish."""
+    fn = {"retry": po.retry, "cancel": po.cancel, "done": po.mark_done}[action]
+    with SessionLocal() as db:
+        try:
+            return fn(db, payout_id)
+        except po.PayoutError as exc:
+            raise BotError(str(exc)) from None
+
+
+@dataclass
+class Delivery:
+    mode: str  # manual | sync
+    auto: bool
+    agent_seen: datetime | None
+    agent_online: bool
+
+
+def get_delivery() -> Delivery:
+    with SessionLocal() as db:
+        return Delivery(po.mode(db), po.auto(db), po.agent_seen(db), po.agent_online(db))
+
+
+def set_delivery(mode: str, auto: bool) -> Delivery:
+    with SessionLocal() as db:
+        po.set_mode(db, mode, auto)
         db.commit()
-        return _view(db, p)
+    return get_delivery()
+
+
+def take_announcements() -> list[tuple[Payout, Account, Referrer | None]]:
+    """Payouts kago-sync applied or failed since the last call, with the referrer's balance."""
+    with SessionLocal() as db:
+        rows = po.unannounced(db)
+        po.mark_announced(db, [p.id for p, _ in rows])
+        return [(p, a, _view(db, a) if p.status == po.PAYOUT_DONE else None) for p, a in rows]
 
 
 def last_payouts(partner_id: int, limit: int = 5) -> list[Payout]:

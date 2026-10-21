@@ -12,6 +12,11 @@ Runs next to the bot and reads its PostgreSQL (read-only is enough):
 
 Event ids are deterministic, so running it again never duplicates data.
 The cursor (last processed updated_at per table) is kept in --state.
+
+Payouts: with REMNAWAVE_URL and REMNAWAVE_TOKEN set, each pass also takes the payouts queued in
+the panel (auto-delivery mode) and adds the days to the referrer's subscription: in Remnawave
+(expireAt) and in the Remnashop database (subscriptions.expire_at), then reports the result.
+This is the only write the script ever makes, and it needs UPDATE on subscriptions.
 """
 
 import argparse
@@ -227,6 +232,7 @@ def check_schema(conn) -> list[str]:
 class Sender:
     def __init__(self, url: str, token: str, verify: bool | str = True):
         self.url = url
+        self.base = url.rsplit("/api/ingest", 1)[0]
         self.client = httpx.Client(
             verify=verify, timeout=30, headers={"Authorization": f"Bearer {token}"}
         )
@@ -263,6 +269,136 @@ class Sender:
                 log.warning("server answered %s, retrying", r.status_code)
             time.sleep(min(2**attempt, 60))
         raise RuntimeError("Не удалось отправить события, сервер недоступен")
+
+
+    # ------------------------------------------------------------------ payouts
+
+    def claim_payouts(self) -> list[dict]:
+        r = self.client.post(f"{self.base}/api/payouts/claim", json={"limit": 20})
+        if r.status_code in (401, 403):
+            sys.exit(f"Токен не принят ({r.status_code}). Проверьте KAGO_TOKEN.")
+        if r.status_code == 404:  # an older panel without payouts
+            return []
+        r.raise_for_status()
+        body = r.json()
+        return body.get("payouts", []) if body.get("enabled") else []
+
+    def report_payout(self, payout_id: int, ok: bool, error: str = "", expire_at: datetime | None = None) -> None:
+        body = {"ok": ok, "error": error[:2000], "expire_at": iso(expire_at) if expire_at else None}
+        for attempt in range(8):  # the days are already added: try hard to report it
+            try:
+                r = self.client.post(f"{self.base}/api/payouts/{payout_id}/result", json=body)
+                if r.status_code in (200, 409):
+                    return
+                log.warning("payout %s report: %s %s", payout_id, r.status_code, r.text[:200])
+            except httpx.HTTPError as exc:
+                log.warning("payout %s report: %s", payout_id, exc)
+            time.sleep(min(2**attempt, 60))
+        log.error("payout %s: result not reported, the panel shows it as in progress", payout_id)
+
+
+class PayoutFailed(Exception):
+    """Reported to the panel as the reason; nothing was changed."""
+
+
+class Remnawave:
+    """The two Remnawave API calls the payouts need (users by uuid)."""
+
+    def __init__(self, url: str, token: str, client: httpx.Client | None = None):
+        self.client = client or httpx.Client(
+            base_url=url.rstrip("/"),
+            timeout=30,
+            headers={
+                "Authorization": f"Bearer {token}",
+                # a panel reached directly (not through its reverse proxy) wants these
+                "X-Forwarded-Proto": "https",
+                "X-Forwarded-For": "127.0.0.1",
+            },
+        )
+
+    def get_user(self, uuid: str) -> dict:
+        r = self.client.get(f"/api/users/{uuid}")
+        if r.status_code == 404:
+            raise PayoutFailed(f"пользователь {uuid} не найден в Remnawave")
+        if r.status_code in (401, 403):
+            raise PayoutFailed(f"Remnawave не принял REMNAWAVE_TOKEN ({r.status_code})")
+        r.raise_for_status()
+        return r.json()["response"]
+
+    def set_expire(self, uuid: str, expire_at: datetime, activate: bool) -> None:
+        body = {"uuid": uuid, "expireAt": expire_at.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")}
+        if activate:
+            body["status"] = "ACTIVE"
+        r = self.client.patch("/api/users", json=body)  # Remnawave 2.x
+        if r.status_code in (404, 405):
+            r = self.client.post("/api/users/update", json=body)  # Remnawave 1.x
+        if r.status_code >= 400:
+            raise PayoutFailed(f"Remnawave отказал: {r.status_code} {r.text[:300]}")
+
+
+def _parse_ts(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def apply_payout(dsn: str, rw: Remnawave, telegram_id: int, days: int) -> datetime:
+    """Add `days` to the user's current subscription. Returns the new expiry date."""
+    if days <= 0:
+        raise PayoutFailed("количество дней должно быть больше нуля")
+    with psycopg.connect(dsn, row_factory=dict_row) as conn:
+        sub = conn.execute(
+            """
+            SELECT s.id, s.user_remna_id::text AS uuid, s.status::text AS status
+            FROM users u JOIN subscriptions s ON s.id = u.current_subscription_id
+            WHERE u.telegram_id = %s
+            FOR UPDATE OF s
+            """,
+            (telegram_id,),
+        ).fetchone()
+        if not sub:
+            raise PayoutFailed(
+                "у реферера нет подписки в VPN-боте — пусть подключится (хотя бы пробный период)"
+            )
+        if sub["status"] in ("DISABLED", "DELETED"):
+            raise PayoutFailed(f"подписка реферера в статусе {sub['status']}")
+        user = rw.get_user(sub["uuid"])
+        now = datetime.now(timezone.utc)
+        # whole seconds: Remnawave keeps no microseconds, both systems get the same date
+        new_expire = (max(_parse_ts(user["expireAt"]), now) + timedelta(days=days)).replace(microsecond=0)
+        expired = user.get("status") == "EXPIRED" or sub["status"] == "EXPIRED"
+        # Written first and committed last: no write rights or a Remnawave error change nothing.
+        try:
+            conn.execute(
+                """
+                UPDATE subscriptions SET expire_at = %s, updated_at = now(),
+                       status = CASE WHEN status = 'EXPIRED' THEN 'ACTIVE' ELSE status END
+                WHERE id = %s
+                """,
+                (new_expire, sub["id"]),
+            )
+        except psycopg.errors.InsufficientPrivilege:
+            raise PayoutFailed("нет прав UPDATE на subscriptions в БД Remnashop") from None
+        rw.set_expire(sub["uuid"], new_expire, activate=expired)
+        conn.commit()
+        return new_expire
+
+
+def deliver_payouts(sender: Sender, dsn: str, rw: Remnawave) -> int:
+    """Apply the payouts queued in the panel. Returns how many were applied."""
+    done = 0
+    for p in sender.claim_payouts():
+        try:
+            expire = apply_payout(dsn, rw, int(p["telegram_id"]), int(p["days"]))
+        except PayoutFailed as exc:
+            log.warning("payout %s failed: %s", p["id"], exc)
+            sender.report_payout(p["id"], False, str(exc))
+        except Exception as exc:  # unexpected: report it, nothing was committed
+            log.exception("payout %s failed", p["id"])
+            sender.report_payout(p["id"], False, f"{type(exc).__name__}: {exc}")
+        else:
+            log.info("payout %s: +%s days for tg %s, until %s", p["id"], p["days"], p["telegram_id"], expire)
+            sender.report_payout(p["id"], True, expire_at=expire)
+            done += 1
+    return done
 
 
 def load_state(path: Path) -> dict[str, datetime]:
@@ -312,6 +448,10 @@ def main() -> None:
     state_path = Path(args.state)
     state = {} if args.full else load_state(state_path)
     sender = Sender(url, token, verify)
+    rw_url, rw_token = os.getenv("REMNAWAVE_URL"), os.getenv("REMNAWAVE_TOKEN")
+    rw = Remnawave(rw_url, rw_token) if rw_url and rw_token else None
+    if rw is None:
+        log.info("REMNAWAVE_URL / REMNAWAVE_TOKEN not set: payouts are not delivered")
 
     while True:
         try:
@@ -322,7 +462,9 @@ def main() -> None:
                 n = run_once(conn, sender.send, state)
             save_state(state_path, state)
             log.info("sent %d events, totals %s", n, sender.totals)
-        except (psycopg.Error, RuntimeError) as exc:
+            if rw is not None:
+                deliver_payouts(sender, dsn, rw)
+        except (psycopg.Error, RuntimeError, httpx.HTTPError) as exc:
             if not args.watch:
                 raise
             log.error("sync failed: %s", exc)

@@ -4,8 +4,9 @@ from datetime import datetime, timedelta, timezone
 from html import escape
 
 from ..config import get_settings
+from ..models import PAYOUT_FAILED, PAYOUT_LABELS, PAYOUT_PROCESSING, Payout
 from ..services import RewardRules
-from .service import Change, InvitedPerson, Referrer, Totals
+from .service import Change, Delivery, InvitedPerson, Referrer, Totals
 
 
 def plural(n: int, one: str, few: str, many: str) -> str:
@@ -44,7 +45,15 @@ def _ago(ts: datetime | None) -> str:
     return ts.astimezone(get_settings().tz).strftime("%d.%m.%Y %H:%M")
 
 
-def menu(t: Totals, rules: RewardRules, data: dict) -> str:
+def delivery_line(d: Delivery) -> str:
+    if d.mode != "sync":
+        return "Выдача дней: вручную"
+    how = "автоматически, все начисления" if d.auto else "автоматически по кнопке «Выдать»"
+    agent = "kago-sync на связи" if d.agent_online else f"⚠️ kago-sync не на связи ({_ago(d.agent_seen)})"
+    return f"Выдача дней: {how} · {agent}"
+
+
+def menu(t: Totals, rules: RewardRules, data: dict, delivery: Delivery) -> str:
     warn = ""
     if not data["last"] or datetime.now(timezone.utc) - data["last"] > timedelta(minutes=30):
         warn = "\n⚠️ Данные из VPN-бота давно не приходили — проверьте синхронизацию на его сервере."
@@ -56,6 +65,7 @@ def menu(t: Totals, rules: RewardRules, data: dict) -> str:
         f"🎁 Начислено: {days(t.accrued)} · выдано: {days(t.issued)}\n"
         f"⏳ К выдаче: <b>{days(t.due)}</b>\n\n"
         f"Правила: {escape(rules_line(rules))}\n"
+        f"{escape(delivery_line(delivery))}\n"
         f"Данные VPN-бота: {_ago(data['last'])}{warn}"
     )
 
@@ -97,6 +107,13 @@ def referrer_card(r: Referrer) -> str:
     own = []
     if p.reward_signup_days is not None or p.reward_percent is not None:
         own.append(f"Индивидуальные ставки: {escape(rules_line(r.balance.rules))}")
+    for x in r.open_payouts:
+        line = f"{'❌' if x.status == PAYOUT_FAILED else '⏳'} Выдача {days(x.days)}: {PAYOUT_LABELS[x.status]}"
+        if x.error:
+            line += f" — {escape(x.error[:200])}"
+        if x.status == PAYOUT_PROCESSING:
+            line += " (если долго — проверьте подписку в VPN и отметьте вручную)"
+        own.append(line)
     return "\n".join(
         [_who(r) + status, link_line(r), "", _balance(r)] + ([""] + own if own else [])
     )
@@ -127,6 +144,23 @@ def payout_message(days_n: int, r: Referrer) -> str:
     else:
         head = f"Корректировка начислений: {days(days_n)}."
     return f"{head}\n\nОсталось к выдаче: {days(max(r.balance.due, 0))}"
+
+
+def applied_message(p: Payout, r: Referrer) -> str:
+    until = ""
+    if p.expire_at:
+        until = f"\nПодписка KAGO VPN активна до <b>{p.expire_at.astimezone(get_settings().tz):%d.%m.%Y}</b>."
+    return (
+        f"🎁 Вам начислено <b>{days(p.days)}</b> подписки — спасибо, что приглашаете друзей!{until}\n\n"
+        f"Осталось к выдаче: {days(max(r.balance.due, 0))}"
+    )
+
+
+def failed_message(p: Payout, partner_name: str) -> str:
+    return (
+        f"❌ Не удалось выдать {days(p.days)} рефереру <b>{escape(partner_name)}</b>:\n"
+        f"<code>{escape(p.error[:500])}</code>\n\nОткройте карточку реферера, чтобы повторить или отменить."
+    )
 
 
 def change_message(c: Change) -> str:

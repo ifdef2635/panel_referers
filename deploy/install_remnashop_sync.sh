@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run on the VPN-bot (Remnashop) server: installs the kago-sync service, which reads the bot
-# database (read-only) and sends registrations and purchases to the KAGO panel every minute.
+# database and sends registrations and purchases to the KAGO panel every minute. With Remnawave
+# access it also delivers referrer payouts: adds the days to the referrer's subscription.
 #
 #   sudo bash deploy/install_remnashop_sync.sh
 #
@@ -9,6 +10,8 @@
 #   KAGO_TOKEN=kago_...                  ingest token (panel → «Интеграции», or `sudo kago issue-token`)
 #   DB_CONTAINER=remnashop-db            Remnashop PostgreSQL container (found automatically)
 #   REMNASHOP_DSN=postgresql://...       instead of DB_CONTAINER, when the database is not in Docker
+#   REMNAWAVE_URL=https://panel.example.com  Remnawave panel, for payouts (empty = no payouts)
+#   REMNAWAVE_TOKEN=...                  Remnawave API token (Remnawave → Settings → API tokens)
 #   ASSUME_YES=1                         do not ask questions (also trusts the panel certificate)
 # Re-running updates the script and keeps the settings.
 
@@ -52,6 +55,8 @@ KAGO_URL="${KAGO_URL:-$(env_get KAGO_URL)}"
 KAGO_TOKEN="${KAGO_TOKEN:-$(env_get KAGO_TOKEN)}"
 DB_CONTAINER="${DB_CONTAINER:-$(env_get DB_CONTAINER)}"
 REMNASHOP_DSN="${REMNASHOP_DSN:-$(env_get REMNASHOP_DSN)}"
+REMNAWAVE_URL="${REMNAWAVE_URL:-$(env_get REMNAWAVE_URL)}"
+REMNAWAVE_TOKEN="${REMNAWAVE_TOKEN:-$(env_get REMNAWAVE_TOKEN)}"
 
 ask KAGO_URL "Адрес панели KAGO (https://домен или https://IP)" ""
 [[ "$KAGO_URL" =~ ^https?://[^/[:space:]]+ ]] || die "KAGO_URL: нужен адрес вида https://stats.example.com"
@@ -76,6 +81,38 @@ if [[ -z "$DB_CONTAINER" ]]; then
     [[ "$REMNASHOP_DSN" != *"'"* ]] || die "REMNASHOP_DSN не должен содержать одинарных кавычек"
 else
     docker inspect "$DB_CONTAINER" >/dev/null 2>&1 || die "Контейнер $DB_CONTAINER не найден (docker ps)"
+fi
+
+# Remnawave access for payouts: defaults from the Remnashop containers' environment.
+if [[ -z "$REMNAWAVE_TOKEN" ]] && command -v docker >/dev/null; then
+    for c in $(docker ps --format '{{.Names}}'); do
+        envs=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$c" 2>/dev/null || true)
+        t=$(sed -n 's/^REMNAWAVE_\(API_\)\{0,1\}TOKEN=//p' <<<"$envs" | head -1)
+        [[ -n "$t" ]] || continue
+        RW_TOKEN_GUESS="$t"
+        u=$(sed -n 's/^REMNAWAVE_\(HOST\|URL\|PANEL_URL\)=//p' <<<"$envs" | head -1)
+        [[ "$u" == http*://* && "$u" != *localhost* ]] && RW_URL_GUESS="$u"
+        break
+    done
+fi
+echo "Автовыдача дней: kago-sync сам продлевает подписку рефереру через API Remnawave."
+ask REMNAWAVE_URL "Адрес панели Remnawave (https://…; пусто — без автовыдачи)" "${RW_URL_GUESS:-}"
+REMNAWAVE_URL="${REMNAWAVE_URL%/}"
+if [[ -n "$REMNAWAVE_URL" ]]; then
+    [[ "$REMNAWAVE_URL" =~ ^https?://[^/[:space:]]+ ]] || die "REMNAWAVE_URL: нужен адрес вида https://panel.example.com"
+    if [[ -n "${RW_TOKEN_GUESS:-}" && -z "$REMNAWAVE_TOKEN" ]]; then
+        echo "Найден токен Remnawave в окружении Remnashop (${RW_TOKEN_GUESS:0:12}…)"
+    fi
+    ask REMNAWAVE_TOKEN "API-токен Remnawave (Remnawave → Настройки → API-токены)" "${RW_TOKEN_GUESS:-}"
+    [[ "$REMNAWAVE_TOKEN" =~ ^[A-Za-z0-9._-]+$ ]] || die "REMNAWAVE_TOKEN пуст или содержит недопустимые символы"
+    rw_code=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $REMNAWAVE_TOKEN" \
+        -H 'X-Forwarded-Proto: https' -H 'X-Forwarded-For: 127.0.0.1' \
+        "$REMNAWAVE_URL/api/users?size=1&start=0" || true)
+    case "$rw_code" in
+        200) info "Remnawave: токен принят" ;;
+        401|403) die "Remnawave не принял токен (HTTP $rw_code)" ;;
+        *) warn "Remnawave ответил HTTP $rw_code на проверку — проверьте адрес; выдачи с ошибкой будут видны в боте" ;;
+    esac
 fi
 
 # --------------------------------------------------------------------------- packages & code
@@ -163,6 +200,10 @@ umask 077
     else
         echo "REMNASHOP_DSN='$REMNASHOP_DSN'"
     fi
+    if [[ -n "$REMNAWAVE_URL" ]]; then
+        echo "REMNAWAVE_URL=$REMNAWAVE_URL"
+        echo "REMNAWAVE_TOKEN=$REMNAWAVE_TOKEN"
+    fi
 } > "$ENV_FILE"
 umask 022
 
@@ -217,6 +258,11 @@ if journalctl -u "$SERVICE" --since "-2min" --no-pager -q | grep -q "sent .* eve
     journalctl -u "$SERVICE" --since "-2min" --no-pager -q | grep "sent .* events" | tail -1
     echo
     echo "${c_bold}Готово.${c_off} Регистрации и покупки уходят в панель каждые $SYNC_SECONDS с."
+    if [[ -n "$REMNAWAVE_URL" ]]; then
+        echo "Автовыдача подключена: включите её в боте → «Правила начисления» → «Выдача: через kago-sync»."
+    else
+        echo "Автовыдача не настроена (нет REMNAWAVE_URL) — дни выдаются вручную."
+    fi
 else
     journalctl -u "$SERVICE" -n 30 --no-pager || true
     die "Синхронизация не запустилась, смотрите журнал выше"

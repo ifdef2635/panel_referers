@@ -11,7 +11,7 @@
     <thead><tr><th>Дата</th><th class="r">Дней</th><th>Комментарий</th></tr></thead>
     <tbody>
     {% for p in partner.payouts %}
-      <tr><td>{{ p.created_at|dt }}</td><td class="r">{{ p.days|num }}</td><td>{{ p.note or '—' }}</td></tr>
+      <tr><td>{{ p.created_at|dt }}</td><td class="r">{{ p.days|num }}</td><td>{{ p.note or '—' }}{% if p.status != 'done' %} <span class="badge plain">{{ PAYOUT_STATUS.get(p.status, p.status) }}</span>{% endif %}</td></tr>
     {% else %}
       <tr><td colspan="3" class="empty">Выдач пока не было</td></tr>
     {% endfor %}
