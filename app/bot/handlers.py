@@ -1,12 +1,13 @@
-"""Telegram handlers: admin menu (referrers, payouts, rules, sync) and the referrer's own screen."""
+"""Telegram handlers: admin menu (referrers, payouts, rules), the referrer's own screen and
+the landing for people who open a referrer's link."""
 
 import asyncio
 import logging
 from html import escape
 
-from aiogram import Bot, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -20,6 +21,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from .. import botdb
+from ..config import get_settings
 from . import service as svc
 from . import texts
 
@@ -46,7 +48,6 @@ class Rule(CallbackData, prefix="g"):
 class Input(StatesGroup):
     add_query = State()
     payout_days = State()
-    link = State()
     signup_days = State()
     percent = State()
     rule_signup = State()
@@ -125,7 +126,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         kb.button(text="👥 Рефереры", callback_data=Nav(to="list").pack())
         kb.button(text="➕ Добавить", callback_data=Nav(to="add").pack())
         kb.button(text="⚙️ Правила начисления", callback_data=Nav(to="rules").pack())
-        kb.button(text="🔄 Синхронизация", callback_data=Nav(to="sync").pack())
+        kb.button(text="🔄 Данные VPN-бота", callback_data=Nav(to="sync").pack())
         if texts.panel_url():
             kb.button(text="🌐 Веб-панель", url=texts.panel_url() + "/admin")
         kb.adjust(2, 2, 1)
@@ -135,7 +136,8 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         await state.clear()
         rows = await run(svc.list_referrers)
         rules = await run(svc.get_rules)
-        await show(target, texts.menu(svc.totals(rows), rules), menu_kb())
+        data = await run(svc.data_status)
+        await show(target, texts.menu(svc.totals(rows), rules, data), menu_kb())
 
     @r.message(CommandStart())
     @r.message(Command("menu"))
@@ -164,7 +166,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
             mark = "" if x.partner.is_active else "⏸ "
             due = f" · ⏳{b.due}" if b.due > 0 else ""
             kb.button(
-                text=f"{mark}{x.partner.name[:28]} · 👥{b.referrals} · 💳{b.purchases}{due}",
+                text=f"{mark}{x.partner.name[:24]} · 🔗{x.clicks} · 👥{b.referrals} · 💳{b.purchases}{due}",
                 callback_data=Ref(act="card", id=x.partner.id).pack(),
             )
         nav = []
@@ -178,7 +180,10 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         kb.button(text="« Меню", callback_data=Nav(to="menu").pack())
         kb.adjust(*([1] * len(rows[page * PAGE : (page + 1) * PAGE])), len(nav) or 1, 2)
         if rows:
-            head = f"<b>Рефереры</b> ({len(rows)}), стр. {page + 1}/{pages}\n👥 приглашено · 💳 покупок · ⏳ к выдаче, дн."
+            head = (
+                f"<b>Рефереры</b> ({len(rows)}), стр. {page + 1}/{pages}\n"
+                "🔗 перешли · 👥 в VPN · 💳 покупок · ⏳ к выдаче, дн."
+            )
         else:
             head = "<b>Рефереров пока нет.</b> Нажмите «Добавить»."
         await show(cb, head, kb.as_markup())
@@ -191,8 +196,8 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         await show(
             cb,
             "<b>Новый реферер</b>\n\nПришлите его <b>Telegram ID</b>, <b>@username</b> или перешлите сюда "
-            "любое его сообщение.\n\nЧеловек должен быть пользователем VPN-бота: реферальная ссылка "
-            "и подсчёт приглашённых идут через его аккаунт в боте.",
+            "любое его сообщение.\n\n@username находится, только если человек уже писал этому боту "
+            "или есть в VPN-боте. Telegram ID подходит всегда (узнать его можно командой /id в этом боте).",
             cancel_kb(),
         )
 
@@ -212,51 +217,47 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         if not query or len(query) > 64:
             await m.answer("Пришлите Telegram ID, @username или пересланное сообщение.", reply_markup=cancel_kb())
             return
-        user = await run(svc.find_bot_user, query)
-        if not user:
+        person = await run(svc.find_person, query)
+        if not person:
             await m.answer(
-                f"Пользователь <code>{escape(query)}</code> не найден среди пользователей VPN-бота.\n"
-                "Пусть он запустит VPN-бот, затем дождитесь синхронизации (до минуты) и попробуйте снова.",
+                f"<code>{escape(query)}</code> не найден. Попросите человека написать этому боту /start "
+                "и попробуйте снова — или пришлите его Telegram ID.",
                 reply_markup=cancel_kb(),
             )
             return
-        existing = await run(svc.referrer_by_telegram, user["telegram_id"]) if user.get("telegram_id") else None
+        existing = await run(svc.referrer_by_telegram, person["telegram_id"])
         if existing:
             await state.clear()
             await m.answer("Этот человек уже реферер:", reply_markup=to_card(existing.partner.id))
             return
         await state.clear()
         kb = InlineKeyboardBuilder()
-        kb.button(text="✅ Добавить", callback_data=Ref(act="create", id=int(user["user_id"])).pack())
+        kb.button(text="✅ Добавить", callback_data=Ref(act="create", id=int(person["telegram_id"])).pack())
         kb.button(text="Отмена", callback_data=Nav(to="menu").pack())
-        reg = user["registered_at"].strftime("%d.%m.%Y") if user.get("registered_at") else "—"
         await m.answer(
-            f"Найден пользователь VPN-бота:\n\n<b>{escape(svc.user_label(user))}</b>\n"
-            f"id в боте: <code>{user['user_id']}</code> · в боте с {reg}\n\nСделать его реферером?",
+            f"<b>{escape(svc.person_label(person))}</b>\n\nСделать его реферером?",
             reply_markup=kb.as_markup(),
         )
 
     @r.callback_query(Ref.filter(F.act == "create"))
-    async def cb_create(cb: CallbackQuery, callback_data: Ref):
-        user = (await run(svc.rs.users_by_ids, [str(callback_data.id)])).get(str(callback_data.id))
-        if not user:
-            await cb.answer("Пользователь не найден", show_alert=True)
-            return
+    async def cb_create(cb: CallbackQuery, callback_data: Ref, bot: Bot):
+        person = await run(svc.find_person, str(callback_data.id))
         try:
-            ref, password = await run(svc.create_referrer, user)
+            ref, password = await run(svc.create_referrer, person)
         except svc.BotError as exc:
             await cb.answer(str(exc), show_alert=True)
             return
-        note = ""
-        if not ref.partner.referral_link:
-            note = (
-                "\n\n⚠️ Реферальную ссылку не удалось получить автоматически (нужны REMNASHOP_DSN и "
-                "VPN_BOT_USERNAME). Задайте её кнопкой «Изменить ссылку»."
-            )
+        sent = await notify(bot, ref.partner.telegram_id, texts.link_message(ref)) if ref.link else False
+        info = (
+            "Ссылка отправлена рефереру."
+            if sent
+            else "Рефереру пока не написать: пусть запустит этого бота, затем нажмите «Отправить ссылку»."
+        )
         await show(
             cb,
-            f"✅ Реферер добавлен.\n\n{texts.access_message(ref.partner.login, password)}\n"
-            "<i>Пароль показан один раз; кнопка «Доступ в панель» выпустит новый.</i>" + note,
+            f"✅ Реферер добавлен.\n\n{texts.link_line(ref)}\n{info}\n\n"
+            f"{texts.access_message(ref.partner.login, password)}\n"
+            "<i>Пароль показан один раз; кнопка «Доступ в панель» выпустит новый.</i>",
             to_card(ref.partner.id),
         )
 
@@ -268,9 +269,9 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         if b.due > 0:
             kb.button(text=f"🎁 Выдать {texts.days(b.due)}", callback_data=Ref(act="pay", id=pid, arg=b.due).pack())
         kb.button(text="✍️ Выдать другое кол-во", callback_data=Ref(act="pay_custom", id=pid).pack())
-        if x.partner.referral_link:
-            kb.button(text="📤 Отправить ссылку", callback_data=Ref(act="send_link", id=pid).pack())
-        kb.button(text="🔗 Изменить ссылку", callback_data=Ref(act="link", id=pid).pack())
+        kb.button(text="👥 Приглашённые", callback_data=Ref(act="invited", id=pid).pack())
+        kb.button(text="📤 Отправить ссылку", callback_data=Ref(act="send_link", id=pid).pack())
+        kb.button(text="🔄 Новая ссылка", callback_data=Ref(act="new_link", id=pid).pack())
         kb.button(text="⚙️ Ставки", callback_data=Ref(act="rates", id=pid).pack())
         kb.button(text="🔑 Доступ в панель", callback_data=Ref(act="access", id=pid).pack())
         kb.button(text="🧾 Выдачи", callback_data=Ref(act="history", id=pid).pack())
@@ -280,7 +281,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         )
         kb.button(text="🗑 Удалить", callback_data=Ref(act="delete", id=pid).pack())
         kb.button(text="« К списку", callback_data=Nav(to="list").pack())
-        kb.adjust(*([1] if b.due > 0 else []), 1, 2, 2, 2, 2, 1)
+        kb.adjust(*([1] if b.due > 0 else []), 1, 2, 2, 2, 2, 2)
         return kb.as_markup()
 
     async def card(target, partner_id: int, prefix: str = ""):
@@ -354,7 +355,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
     async def cb_history(cb: CallbackQuery, callback_data: Ref):
         rows = await run(svc.last_payouts, callback_data.id, 10)
         lines = [
-            f"{p.created_at.astimezone(svc.get_settings().tz):%d.%m.%Y %H:%M} · <b>{p.days:+d}</b> · {escape(p.note or '—')}"
+            f"{p.created_at.astimezone(get_settings().tz):%d.%m.%Y %H:%M} · <b>{p.days:+d}</b> · {escape(p.note or '—')}"
             for p in rows
         ]
         await show(
@@ -378,42 +379,29 @@ def build_admin_router(admin_ids: set[int]) -> Router:
                 show_alert=True,
             )
 
-    @r.callback_query(Ref.filter(F.act == "link"))
-    async def cb_link(cb: CallbackQuery, callback_data: Ref, state: FSMContext):
-        await state.set_state(Input.link)
-        await state.update_data(pid=callback_data.id)
+    @r.callback_query(Ref.filter(F.act == "new_link"))
+    async def cb_new_link(cb: CallbackQuery, callback_data: Ref):
         kb = InlineKeyboardBuilder()
-        if botdb.enabled():
-            kb.button(text="🔄 Взять из VPN-бота", callback_data=Ref(act="link_refresh", id=callback_data.id).pack())
+        kb.button(text="🔄 Да, выпустить новую", callback_data=Ref(act="new_link_ok", id=callback_data.id).pack())
         kb.button(text="Отмена", callback_data=Ref(act="card", id=callback_data.id).pack())
         kb.adjust(1)
         await show(
             cb,
-            "Пришлите новую реферальную ссылку (https://…)\n"
-            "или возьмите её из VPN-бота — это ссылка аккаунта реферера, по ней считаются приглашённые.",
+            "Выпустить новую ссылку? Старая перестанет работать (например, если её распространяют без "
+            "спроса). Уже пришедшие по ней люди останутся за реферером.",
             kb.as_markup(),
         )
 
-    @r.callback_query(Ref.filter(F.act == "link_refresh"))
-    async def cb_link_refresh(cb: CallbackQuery, callback_data: Ref, state: FSMContext):
-        await state.clear()
-        try:
-            await run(svc.refresh_link, callback_data.id)
-        except svc.BotError as exc:
-            await cb.answer(str(exc), show_alert=True)
-            return
-        await card(cb, callback_data.id, "✅ Ссылка обновлена.\n\n")
+    @r.callback_query(Ref.filter(F.act == "new_link_ok"))
+    async def cb_new_link_ok(cb: CallbackQuery, callback_data: Ref):
+        await run(svc.new_link, callback_data.id)
+        await card(cb, callback_data.id, "✅ Новая ссылка выпущена — отправьте её рефереру.\n\n")
 
-    @r.message(Input.link)
-    async def on_link(m: Message, state: FSMContext):
-        pid = (await state.get_data())["pid"]
-        try:
-            await run(svc.set_link, pid, m.text or "")
-        except svc.BotError as exc:
-            await m.answer(str(exc), reply_markup=cancel_kb(pid))
-            return
-        await state.clear()
-        await card(m, pid, "✅ Ссылка сохранена.\n\n")
+    @r.callback_query(Ref.filter(F.act == "invited"))
+    async def cb_invited(cb: CallbackQuery, callback_data: Ref):
+        x = await run(svc.get_referrer, callback_data.id)
+        people, total = await run(svc.invited, callback_data.id, 30)
+        await show(cb, texts.invited_list(people, total, x.partner.name), to_card(callback_data.id))
 
     # ----------------------------------------------------------------- rates
 
@@ -574,11 +562,15 @@ def build_admin_router(admin_ids: set[int]) -> Router:
 
     @r.callback_query(Nav.filter(F.to == "sync"))
     async def cb_sync(cb: CallbackQuery):
+        data = await run(svc.data_status)
         if not botdb.enabled():
             await show(
                 cb,
-                "Прямое подключение к БД VPN-бота не настроено (REMNASHOP_DSN): данные приходят "
-                "событиями от бота в веб-панель, синхронизировать нечего.",
+                "<b>Данные из VPN-бота</b>\n\n"
+                f"Последнее поступление: {texts._ago(data['last'])} · событий всего: {data['events']}\n\n"
+                "Регистрации и покупки присылает скрипт синхронизации на сервере VPN-бота "
+                "(<code>deploy/install_remnashop_sync.sh</code>), раз в минуту. Если данные не идут — "
+                "проверьте там <code>systemctl status kago-sync</code>.",
                 back(),
             )
             return
@@ -609,6 +601,14 @@ def build_admin_router(admin_ids: set[int]) -> Router:
 def build_referrer_router() -> Router:
     r = Router(name="referrer")
 
+    def vpn_kb() -> InlineKeyboardMarkup | None:
+        vpn = get_settings().vpn_bot_username.lstrip("@")
+        if not vpn:
+            return None
+        b = InlineKeyboardBuilder()
+        b.button(text="🚀 Перейти в KAGO VPN", url=f"https://t.me/{vpn}")
+        return b.as_markup()
+
     def kb() -> InlineKeyboardMarkup:
         b = InlineKeyboardBuilder()
         b.button(text="🔄 Обновить", callback_data="me")
@@ -620,9 +620,26 @@ def build_referrer_router() -> Router:
     async def home(target, user_id: int):
         x = await run(svc.referrer_by_telegram, user_id)
         if not x or not x.partner.is_active:
-            await show(target, texts.not_registered(user_id))
+            await show(target, texts.not_registered(user_id), vpn_kb())
             return
         await show(target, texts.referrer_home(x), kb())
+
+    @r.message(CommandStart(deep_link=True, magic=F.args.startswith(svc.START_PREFIX)))
+    async def cmd_invite(m: Message, command: CommandObject):
+        u = m.from_user
+        name = " ".join(x for x in (u.first_name, u.last_name) if x)
+        status, partner = await run(
+            svc.register_invite, command.args[len(svc.START_PREFIX):], u.id, u.username, name
+        )
+        if status == "mine":
+            await m.answer("Это ваша собственная ссылка — отправьте её друзьям 🙂")
+            await home(m, u.id)
+            return
+        await m.answer(
+            texts.invite_welcome(partner.name if status == "ok" else None),
+            reply_markup=vpn_kb(),
+            disable_web_page_preview=True,
+        )
 
     @r.message(CommandStart())
     @r.message(Command("stats"))
@@ -632,7 +649,7 @@ def build_referrer_router() -> Router:
     @r.message(Command("link"))
     async def cmd_link(m: Message):
         x = await run(svc.referrer_by_telegram, m.from_user.id)
-        if not x or not x.partner.is_active or not x.partner.referral_link:
+        if not x or not x.partner.is_active or not x.link:
             await home(m, m.from_user.id)
             return
         await m.answer(texts.link_message(x), disable_web_page_preview=True)
@@ -650,6 +667,29 @@ def build_referrer_router() -> Router:
         await home(m, m.from_user.id)
 
     return r
+
+
+# =========================================================================== setup
+
+
+class ContactMiddleware(BaseMiddleware):
+    """Remember everyone who writes to the bot, so referrers can be found by @username."""
+
+    async def __call__(self, handler, event, data):
+        u = data.get("event_from_user")
+        if u and not u.is_bot:
+            name = " ".join(x for x in (u.first_name, u.last_name) if x)
+            try:
+                await run(svc.touch_contact, u.id, u.username, name)
+            except Exception:
+                log.exception("can't save contact %s", u.id)
+        return await handler(event, data)
+
+
+def setup(dp: Dispatcher, admin_ids: set[int]) -> None:
+    dp.update.outer_middleware(ContactMiddleware())
+    dp.include_router(build_admin_router(admin_ids))
+    dp.include_router(build_referrer_router())
 
 
 # =========================================================================== notifications

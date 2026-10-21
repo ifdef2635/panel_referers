@@ -21,6 +21,8 @@ MIGRATIONS = (
     "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reward_percent INTEGER",
     "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS referral_link VARCHAR(255) NOT NULL DEFAULT ''",
     "ALTER TABLE payments ADD COLUMN IF NOT EXISTS duration_days INTEGER",
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS invite_code VARCHAR(32)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS accounts_invite_code_key ON accounts (invite_code)",
 )
 
 

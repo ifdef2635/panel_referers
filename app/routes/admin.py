@@ -25,6 +25,7 @@ from ..security import hash_password
 from ..services import (
     chart_payload,
     default_rules,
+    invite_link,
     partner_scope,
     partners,
     resolve_period,
@@ -283,6 +284,7 @@ def partner_settings(
         partner=p,
         balance=reward_balance(db, p),
         defaults=default_rules(db),
+        invite_link=invite_link(db, p),
         source_list=rs.source_list(),
         taken_sources=taken,
     )
@@ -296,7 +298,6 @@ def partner_edit(
     telegram_id: str = Form(""),
     reward_signup_days: str = Form(""),
     reward_percent: str = Form(""),
-    referral_link: str = Form(""),
     note: str = Form(""),
     is_active: bool = Form(False),
     include_second_level: bool = Form(False),
@@ -312,11 +313,6 @@ def partner_edit(
     except ValueError:
         flash(request, "Telegram ID, дни и проценты должны быть целыми неотрицательными числами", "error")
         return _back(p.id)
-    link = referral_link.strip()
-    if link and not link.startswith(("https://", "http://", "tg://")):
-        flash(request, "Реферальная ссылка должна начинаться с https://", "error")
-        return _back(p.id)
-    p.referral_link = link[:255]
     p.name = name.strip()[:128] or p.login
     p.note = note.strip()[:2000]
     if p.is_active and not is_active:

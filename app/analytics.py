@@ -39,28 +39,38 @@ def clear_cache() -> None:
 # --------------------------------------------------------------------------- scope
 
 
+# An invite counts only for a VPN-bot user who registered after opening the link (a few minutes
+# of clock skew allowed), so existing customers sent a partner link don't count.
+INVITE_MATCH = "(u.registered_at IS NULL OR u.registered_at >= i.created_at - interval '10 minutes')"
+
+
 @dataclass(frozen=True)
 class Scope:
     """Set of bot users a statistic is computed over.
 
     all_users=True means the whole shop (admin view). Otherwise the users that came through
-    the partner's referrer accounts (1st level, optionally 2nd) or sources (ad links).
+    the partner's referrer accounts (1st level, optionally 2nd), sources (ad links) or the
+    partner's own link in the Telegram bot (invites).
     """
 
     all_users: bool = False
     referrer_ids: tuple[str, ...] = field(default_factory=tuple)
     sources: tuple[str, ...] = field(default_factory=tuple)
     second_level: bool = False
+    invite_partners: tuple[int, ...] = field(default_factory=tuple)
 
     @property
     def empty(self) -> bool:
-        return not self.all_users and not self.referrer_ids and not self.sources
+        return (
+            not self.all_users and not self.referrer_ids and not self.sources and not self.invite_partners
+        )
 
     def params(self) -> dict[str, Any]:
         return {
             "ref_ids": list(self.referrer_ids),
             "sources": list(self.sources),
             "second": self.second_level,
+            "invite_partners": list(self.invite_partners),
         }
 
     def cte(self) -> str:
@@ -69,10 +79,12 @@ class Scope:
             scope AS (
                 SELECT u.user_id,
                        CASE WHEN u.referrer_id IS NOT NULL THEN 'referral'
+                            WHEN EXISTS (SELECT 1 FROM invites i WHERE i.telegram_id = u.telegram_id
+                                         AND {INVITE_MATCH}) THEN 'invite'
                             WHEN u.source IS NOT NULL THEN 'ad_link'
                             ELSE 'organic' END AS via
                 FROM bot_users u
-            )"""
+            )""".replace("{INVITE_MATCH}", INVITE_MATCH)
         return """
             scope_raw AS (
                 SELECT u.user_id, 'ref1' AS via, 1 AS prio
@@ -87,13 +99,18 @@ class Scope:
                 SELECT u.user_id, 'ad_link', 3
                 FROM bot_users u
                 WHERE u.source = ANY(%(sources)s::text[])
+                UNION ALL
+                SELECT u.user_id, 'invite', 0
+                FROM invites i
+                JOIN bot_users u ON u.telegram_id = i.telegram_id
+                WHERE i.partner_id = ANY(%(invite_partners)s::int[]) AND {INVITE_MATCH}
             ),
             scope AS (
                 SELECT DISTINCT ON (user_id) user_id, via
                 FROM scope_raw
                 WHERE NOT (user_id = ANY(%(ref_ids)s::text[]))
                 ORDER BY user_id, prio
-            )"""
+            )""".replace("{INVITE_MATCH}", INVITE_MATCH)
 
     def paid_cte(self) -> str:
         # A purchase: completed, not test, not refunded, positive amount.

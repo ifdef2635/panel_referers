@@ -11,7 +11,8 @@ from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefaul
 
 from ..config import get_settings
 from ..db import init_db
-from .handlers import build_admin_router, build_referrer_router, notify_loop
+from . import service as svc
+from .handlers import notify_loop, setup
 
 log = logging.getLogger("kago.bot")
 
@@ -23,12 +24,13 @@ async def main() -> int:
         return 1
     if not s.admin_ids:
         log.warning("BOT_ADMIN_IDS пуст: управлять реферерами будет некому")
+    if not s.vpn_bot_username:
+        log.warning("VPN_BOT_USERNAME не задан: приглашённым некуда будет перейти")
     init_db()
 
     bot = Bot(s.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
-    dp.include_router(build_admin_router(s.admin_ids))
-    dp.include_router(build_referrer_router())
+    setup(dp, s.admin_ids)
 
     await bot.set_my_commands(
         [
@@ -52,6 +54,7 @@ async def main() -> int:
             log.info("commands for %s: %s", admin_id, exc)
 
     me = await bot.get_me()
+    await asyncio.to_thread(svc.set_bot_username, me.username)  # referrer links point to this bot
     log.warning("bot @%s started, admins: %s", me.username, sorted(s.admin_ids))
     tasks = []
     if s.bot_notify_seconds > 0:

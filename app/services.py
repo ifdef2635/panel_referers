@@ -1,3 +1,4 @@
+import secrets
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
@@ -78,6 +79,21 @@ def reward_rules(db: Session, partner: Account, defaults: RewardRules | None = N
     )
 
 
+# --------------------------------------------------------------------------- invite links
+
+BOT_USERNAME_KEY = "bot_username"  # saved by the Telegram bot on start
+START_PREFIX = "r_"
+
+
+def invite_link(db: Session, partner: Account) -> str:
+    """The partner's link to the Telegram bot (t.me/<bot>?start=r_<code>); "" until the bot ran."""
+    if not partner.invite_code:
+        partner.invite_code = secrets.token_urlsafe(6).replace("-", "x").replace("_", "z")
+        db.commit()
+    name = get_setting(db, BOT_USERNAME_KEY, "")
+    return f"https://t.me/{name}?start={START_PREFIX}{partner.invite_code}" if name else ""
+
+
 # --------------------------------------------------------------------------- scope
 
 
@@ -86,6 +102,7 @@ def partner_scope(partner: Account) -> rs.Scope:
         referrer_ids=tuple(sorted(s.ref for s in partner.sources if s.kind == SOURCE_REFERRER)),
         sources=tuple(sorted(s.ref for s in partner.sources if s.kind == SOURCE_AD)),
         second_level=partner.include_second_level,
+        invite_partners=(partner.id,),
     )
 
 

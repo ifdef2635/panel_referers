@@ -106,7 +106,7 @@
       <label>Процент от срока купленной подписки
         <input type="number" name="reward_percent" min="0" value="{{ partner.reward_percent if partner.reward_percent is not none else '' }}" placeholder="по умолчанию: {{ defaults.percent }}">
       </label>
-      <label>Реферальная ссылка (выдаётся в Telegram-боте)<input name="referral_link" value="{{ partner.referral_link }}" maxlength="255" placeholder="https://t.me/…?start=…"></label>
+      <p class="sm">Ссылка партнёра: {% if invite_link %}<code>{{ invite_link }}</code>{% else %}<span class="muted">появится после первого запуска Telegram-бота</span>{% endif %}</p>
       <label class="check"><input type="checkbox" name="include_second_level" value="true" {{ 'checked' if partner.include_second_level }}> Учитывать рефералов 2-го уровня</label>
       <label class="check"><input type="checkbox" name="show_contacts" value="true" {{ 'checked' if partner.show_contacts }}> Показывать партнёру имена и @username пользователей</label>
       <label class="check"><input type="checkbox" name="is_active" value="true" {{ 'checked' if partner.is_active }}> Доступ в кабинет включён</label>

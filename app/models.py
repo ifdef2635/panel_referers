@@ -54,8 +54,10 @@ class Account(Base):
     # Reward overrides; None = global default (see services.reward_rules).
     reward_signup_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     reward_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    # Link the partner shares (the referral link of their bot account), shown in the Telegram bot.
+    # Legacy, not used: the link is built from invite_code (see app/bot/service.py).
     referral_link: Mapped[str] = mapped_column(String(255), default="")
+    # Code of the partner's own link to the Telegram bot: t.me/<bot>?start=r_<code>.
+    invite_code: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True)
     include_second_level: Mapped[bool] = mapped_column(Boolean, default=False)
     show_contacts: Mapped[bool] = mapped_column(Boolean, default=False)
     # Telegram ID of the partner (where rewarded days go), informational.
@@ -111,6 +113,35 @@ class Payout(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     partner: Mapped[Account] = relationship(back_populates="payouts", foreign_keys=[partner_id])
+
+
+class Invite(Base):
+    """Someone who opened a partner's link in the Telegram bot. The first partner wins.
+
+    The invite counts once that Telegram user shows up as a VPN-bot user registered after the
+    click (bot_users.telegram_id, filled by the sync); purchases are matched the same way.
+    """
+
+    __tablename__ = "invites"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    partner_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
+    username: Mapped[str | None] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class BotContact(Base):
+    """Everyone who wrote to the Telegram bot, to find people by @username."""
+
+    __tablename__ = "bot_contacts"
+
+    telegram_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    username: Mapped[str | None] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(255), default="")
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class Setting(Base):

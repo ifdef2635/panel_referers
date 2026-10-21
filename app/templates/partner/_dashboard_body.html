@@ -8,6 +8,7 @@
     {% endif %}
   </div>
 {% else %}
+  {% if invite_link %}<div class="card notice">Реферальная ссылка: <code>{{ invite_link }}</code></div>{% endif %}
   {{ period_picker(period, base) }}
   {{ kpis(stats, period, earned) }}
   {{ chart_block(chart) }}

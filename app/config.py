@@ -29,10 +29,8 @@ class Settings(BaseSettings):
     bot_token: str = ""
     # Telegram IDs of the bot admins, comma-separated.
     bot_admin_ids: str = ""
-    # Username of the VPN bot (Remnashop) whose referral links are handed out, without @.
+    # Username of the VPN bot (without @): people who open a referrer link are sent there.
     vpn_bot_username: str = ""
-    # {bot} = vpn_bot_username, {code} = users.referral_code in the Remnashop database.
-    referral_link_template: str = "https://t.me/{bot}?start=ref_{code}"
     # How often referrers get "new invites / purchases" messages; 0 = off.
     bot_notify_seconds: int = 300
 
