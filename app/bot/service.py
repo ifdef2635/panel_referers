@@ -1,11 +1,9 @@
 """Referrer management for the Telegram bot, on top of the panel database.
 
-A referrer is a partner account (Account, role=partner) with a Telegram ID. Their link leads to
-this bot (t.me/<bot>?start=r_<invite_code>); whoever opens it is remembered as an Invite and sent
-on to the VPN bot. Registrations and purchases come from the VPN bot's data (remnashop_sync on
-its server pushes them to /api/ingest) and are matched to invites by Telegram ID, so the bot and
-the web panel show the same numbers. Everything here is synchronous; the bot calls it through
-asyncio.to_thread.
+A referrer is a partner account (Account, role=partner) with a Telegram ID. Their link is on the
+panel domain (<PUBLIC_URL>/r/<code>, see app/referrals.py): each new person who opens it counts
+as a referral and is sent on to the site. The bot and the web panel read the same tables, so they
+show the same numbers. Everything here is synchronous; the bot calls it through asyncio.to_thread.
 """
 
 import json
@@ -13,24 +11,21 @@ import logging
 import re
 import secrets
 from dataclasses import dataclass
-from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 
 from .. import analytics as rs
-from ..db import SessionLocal, fetch_all, fetch_one
-from ..models import ROLE_PARTNER, Account, BotContact, Invite, Payout, utcnow
+from ..db import SessionLocal, fetch_one
+from ..models import ROLE_PARTNER, Account, BotContact, Payout, ReferralVisit, utcnow
+from ..referrals import referral_link
 from ..security import hash_password
 from ..services import (
-    BOT_USERNAME_KEY,
-    START_PREFIX,  # noqa: F401  (used by the handlers as svc.START_PREFIX)
     RewardBalance,
     RewardRules,
     default_rules,
     get_setting,
-    invite_link,
     reward_balance,
     save_default_rules,
     set_setting,
@@ -50,17 +45,11 @@ class Referrer:
     partner: Account
     balance: RewardBalance
     link: str
-    clicks: int  # people who opened the link (registered in the VPN bot or not)
+    clicks: int  # all opens of the link, counted or not
     username: str | None
 
 
 # --------------------------------------------------------------------------- links & contacts
-
-
-def set_bot_username(username: str) -> None:
-    with SessionLocal() as db:
-        set_setting(db, BOT_USERNAME_KEY, username)
-        db.commit()
 
 
 def touch_contact(telegram_id: int, username: str | None, name: str) -> None:
@@ -128,7 +117,7 @@ def _load(db, partner_id: int) -> Account:
 
 def _view(db, p: Account, defaults: RewardRules | None = None, clicks: dict | None = None) -> Referrer:
     if clicks is None:
-        clicks = {p.id: db.scalar(select(func.count()).where(Invite.partner_id == p.id))}
+        clicks = {p.id: db.scalar(select(func.count()).where(ReferralVisit.partner_id == p.id))}
     username = (
         db.scalar(select(BotContact.username).where(BotContact.telegram_id == p.telegram_id))
         if p.telegram_id
@@ -137,7 +126,7 @@ def _view(db, p: Account, defaults: RewardRules | None = None, clicks: dict | No
     return Referrer(
         partner=p,
         balance=reward_balance(db, p, defaults),
-        link=invite_link(db, p),
+        link=referral_link(db, p),
         clicks=clicks.get(p.id, 0),
         username=username,
     )
@@ -151,7 +140,9 @@ def get_referrer(partner_id: int) -> Referrer:
 def list_referrers() -> list[Referrer]:
     with SessionLocal() as db:
         defaults = default_rules(db)
-        clicks = dict(db.execute(select(Invite.partner_id, func.count()).group_by(Invite.partner_id)).all())
+        clicks = dict(
+            db.execute(select(ReferralVisit.partner_id, func.count()).group_by(ReferralVisit.partner_id)).all()
+        )
         partners = db.scalars(select(Account).where(Account.role == ROLE_PARTNER).order_by(Account.name))
         rows = [_view(db, p, defaults, clicks) for p in partners]
     rows.sort(key=lambda r: (r.partner.is_active, r.balance.due, r.balance.referrals), reverse=True)
@@ -211,7 +202,7 @@ def new_link(partner_id: int) -> str:
     with SessionLocal() as db:
         p = _load(db, partner_id)
         p.invite_code = None
-        return invite_link(db, p)
+        return referral_link(db, p)
 
 
 def set_rates(partner_id: int, *, signup_days: int | None = ..., percent: int | None = ...) -> None:
@@ -279,75 +270,28 @@ def last_payouts(partner_id: int, limit: int = 5) -> list[Payout]:
         )
 
 
-# --------------------------------------------------------------------------- invites
+# --------------------------------------------------------------------------- visits
+
+REASONS = {"": "✅", "repeat": "🔁 повтор", "ip": "🌐 тот же адрес", "bot": "🤖 превью/бот", "off": "⏸ реф. отключён"}
 
 
-def register_invite(code: str, telegram_id: int, username: str | None, name: str) -> tuple[str, Account | None]:
-    """Someone opened a partner link. Returns (status, partner):
-
-    ok — remembered for this partner; mine — the partner's own link; taken — already came
-    through someone's link earlier (the first one wins); bad — unknown or disabled link.
-    """
+def visits(partner_id: int, limit: int = 30) -> tuple[list[ReferralVisit], int, int]:
+    """The latest opens of the link, the total and the counted number."""
     with SessionLocal() as db:
-        p = db.scalar(select(Account).where(Account.invite_code == code, Account.role == ROLE_PARTNER))
-        if not p or not p.is_active:
-            return "bad", None
-        if p.telegram_id == telegram_id:
-            return "mine", p
-        if db.scalar(select(Invite.id).where(Invite.telegram_id == telegram_id)):
-            return "taken", p
-        db.add(Invite(telegram_id=telegram_id, partner_id=p.id, username=username, name=name[:255]))
-        try:
-            db.commit()
-        except IntegrityError:  # opened twice at the same moment
-            db.rollback()
-            return "taken", p
-        rs.clear_cache()
-        return "ok", p
-
-
-@dataclass
-class InvitedPerson:
-    telegram_id: int
-    username: str | None
-    name: str
-    clicked_at: datetime
-    registered_at: datetime | None  # in the VPN bot; None = not registered (yet)
-    counted: bool  # registered after the click
-    purchases: int
-
-
-def invited(partner_id: int, limit: int = 30) -> tuple[list[InvitedPerson], int]:
-    rows = fetch_all(
-        f"""
-        SELECT i.telegram_id, i.username, i.name, i.created_at, u.registered_at,
-               (u.user_id IS NOT NULL AND {rs.INVITE_MATCH}) AS counted,
-               (SELECT COUNT(*) FROM payments p WHERE p.user_id = u.user_id AND p.paid_at IS NOT NULL
-                  AND p.amount > 0 AND NOT p.is_test AND p.refunded_at IS NULL) AS purchases
-        FROM invites i
-        LEFT JOIN LATERAL (
-            SELECT user_id, registered_at FROM bot_users WHERE telegram_id = i.telegram_id
-            ORDER BY registered_at LIMIT 1
-        ) u ON true
-        WHERE i.partner_id = %(p)s
-        ORDER BY i.created_at DESC LIMIT %(limit)s
-        """,
-        {"p": partner_id, "limit": limit},
-    )
-    total = fetch_one("SELECT COUNT(*) AS n FROM invites WHERE partner_id = %(p)s", {"p": partner_id})
-    people = [
-        InvitedPerson(
-            telegram_id=r["telegram_id"],
-            username=r["username"],
-            name=r["name"] or "",
-            clicked_at=r["created_at"],
-            registered_at=r["registered_at"],
-            counted=bool(r["counted"]),
-            purchases=int(r["purchases"] or 0),
+        rows = list(
+            db.scalars(
+                select(ReferralVisit)
+                .where(ReferralVisit.partner_id == partner_id)
+                .order_by(ReferralVisit.created_at.desc())
+                .limit(limit)
+            )
         )
-        for r in rows
-    ]
-    return people, int(total["n"])
+        total, counted = db.execute(
+            select(func.count(), func.count().filter(ReferralVisit.counted)).where(
+                ReferralVisit.partner_id == partner_id
+            )
+        ).one()
+        return rows, int(total), int(counted)
 
 
 # --------------------------------------------------------------------------- rules & totals
@@ -391,12 +335,6 @@ def totals(rows: list[Referrer] | None = None) -> Totals:
         issued=sum(r.balance.issued for r in rows),
         due=sum(max(0, r.balance.due) for r in rows),
     )
-
-
-def data_status() -> dict:
-    """When the last VPN-bot data arrived (events from remnashop_sync or the direct DB sync)."""
-    row = fetch_one("SELECT MAX(received_at) AS last, COUNT(*) AS n FROM events")
-    return {"last": row["last"] if row else None, "events": int(row["n"]) if row else 0}
 
 
 # --------------------------------------------------------------------------- notifications

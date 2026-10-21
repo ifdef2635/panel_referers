@@ -1,4 +1,3 @@
-import secrets
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 
@@ -8,6 +7,7 @@ from sqlalchemy.orm import Session
 from . import analytics as rs
 from .config import get_settings
 from .db import fetch_one
+from .referrals import counted_referrals
 from .models import (
     DEFAULT_PURCHASE_PERCENT,
     DEFAULT_SIGNUP_DAYS,
@@ -79,21 +79,6 @@ def reward_rules(db: Session, partner: Account, defaults: RewardRules | None = N
     )
 
 
-# --------------------------------------------------------------------------- invite links
-
-BOT_USERNAME_KEY = "bot_username"  # saved by the Telegram bot on start
-START_PREFIX = "r_"
-
-
-def invite_link(db: Session, partner: Account) -> str:
-    """The partner's link to the Telegram bot (t.me/<bot>?start=r_<code>); "" until the bot ran."""
-    if not partner.invite_code:
-        partner.invite_code = secrets.token_urlsafe(6).replace("-", "x").replace("_", "z")
-        db.commit()
-    name = get_setting(db, BOT_USERNAME_KEY, "")
-    return f"https://t.me/{name}?start={START_PREFIX}{partner.invite_code}" if name else ""
-
-
 # --------------------------------------------------------------------------- scope
 
 
@@ -102,7 +87,6 @@ def partner_scope(partner: Account) -> rs.Scope:
         referrer_ids=tuple(sorted(s.ref for s in partner.sources if s.kind == SOURCE_REFERRER)),
         sources=tuple(sorted(s.ref for s in partner.sources if s.kind == SOURCE_AD)),
         second_level=partner.include_second_level,
-        invite_partners=(partner.id,),
     )
 
 
@@ -126,7 +110,9 @@ class RewardBalance:
 
 def reward_balance(db: Session, partner: Account, defaults: RewardRules | None = None) -> RewardBalance:
     rules = reward_rules(db, partner, defaults)
-    base = rs.reward_base(partner_scope(partner), rules.renewals)
+    base = dict(rs.reward_base(partner_scope(partner), rules.renewals))
+    # referrals: people counted on the partner link + users of the bot sources, if any
+    base["referrals"] += counted_referrals(db, partner.id)
     issued = int(
         db.scalar(select(func.coalesce(func.sum(Payout.days), 0)).where(Payout.partner_id == partner.id))
     )
@@ -150,7 +136,8 @@ def reward_balance(db: Session, partner: Account, defaults: RewardRules | None =
 
 def earned_in_period(db: Session, partner: Account, start: datetime, end: datetime) -> dict:
     rules = reward_rules(db, partner)
-    base = rs.reward_base(partner_scope(partner), rules.renewals, start, end)
+    base = dict(rs.reward_base(partner_scope(partner), rules.renewals, start, end))
+    base["referrals"] += counted_referrals(db, partner.id, start, end)
     signup = base["referrals"] * rules.signup_days
     purchase = rules.purchase_days(base["days"])
     return base | {"signup_reward": signup, "purchase_reward": purchase, "total": signup + purchase, "rules": rules}

@@ -19,7 +19,7 @@
 #                               read-only access is enough; empty = only events via /api/ingest)
 #   BOT_TOKEN=123:ABC           Telegram bot for managing referrers (empty = no bot)
 #   BOT_ADMIN_IDS=111,222       Telegram IDs of the bot admins
-#   VPN_BOT_USERNAME=my_vpn_bot VPN bot where people who open a referrer link are sent
+#   REFERRAL_REDIRECT_URL=https://usekago.net  where referral links (<panel>/r/<code>) lead
 #   REPO_URL=https://github.com/...  BRANCH=main   clone from git instead of the script's directory
 #   ASSUME_YES=1                do not ask questions
 
@@ -90,7 +90,6 @@ if (( FIRST_INSTALL )); then
     ask BOT_TOKEN "Токен Telegram-бота для управления реферерами (пусто — без бота)" ""
     if [[ -n "$BOT_TOKEN" ]]; then
         ask BOT_ADMIN_IDS "Telegram ID администраторов бота (через запятую)" ""
-        ask VPN_BOT_USERNAME "Username VPN-бота, куда отправлять приглашённых (без @)" ""
     fi
 else
     info "Найдена существующая установка — обновление (данные и настройки сохраняются)"
@@ -102,11 +101,10 @@ REMNASHOP_DSN="${REMNASHOP_DSN:-$(env_get REMNASHOP_DSN)}"
 BOT_TOKEN="${BOT_TOKEN:-$(env_get BOT_TOKEN)}"
 BOT_ADMIN_IDS="${BOT_ADMIN_IDS:-$(env_get BOT_ADMIN_IDS)}"
 BOT_ADMIN_IDS="${BOT_ADMIN_IDS// /}"
-VPN_BOT_USERNAME="${VPN_BOT_USERNAME:-$(env_get VPN_BOT_USERNAME)}"
-VPN_BOT_USERNAME="${VPN_BOT_USERNAME#@}"
+REFERRAL_REDIRECT_URL="${REFERRAL_REDIRECT_URL:-$(env_get REFERRAL_REDIRECT_URL)}"
 [[ -z "$BOT_TOKEN" || "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || die "BOT_TOKEN не похож на токен Telegram-бота"
 [[ "$BOT_ADMIN_IDS" =~ ^[0-9,]*$ ]] || die "BOT_ADMIN_IDS: Telegram ID через запятую"
-[[ "$VPN_BOT_USERNAME" =~ ^[A-Za-z0-9_]*$ ]] || die "VPN_BOT_USERNAME: только латиница, цифры и _"
+[[ -z "$REFERRAL_REDIRECT_URL" || "$REFERRAL_REDIRECT_URL" =~ ^https?://[^[:space:]\'\"]+$ ]] || die "REFERRAL_REDIRECT_URL: нужен адрес вида https://usekago.net"
 
 # --------------------------------------------------------------------------- packages
 
@@ -130,7 +128,7 @@ PUBLIC_URL="https://$HOST"
 
 info "PostgreSQL"
 systemctl enable --now postgresql -q 2>/dev/null || systemctl start postgresql
-for _ in $(seq 1 20); do runuser -u postgres -- pg_isready -q && break; sleep 1; done
+for _ in $(seq 1 20); do (cd / && runuser -u postgres -- pg_isready -q) && break; sleep 1; done
 
 DATABASE_URL="$(env_get DATABASE_URL)"
 if [[ -z "$DATABASE_URL" ]]; then
@@ -203,7 +201,7 @@ REMNASHOP_DSN='$REMNASHOP_DSN'
 # Telegram bot (systemctl restart $BOT_SERVICE)
 BOT_TOKEN='$BOT_TOKEN'
 BOT_ADMIN_IDS=$BOT_ADMIN_IDS
-VPN_BOT_USERNAME=$VPN_BOT_USERNAME
+REFERRAL_REDIRECT_URL=$REFERRAL_REDIRECT_URL
 EOF
     sed -i -e '/^[A-Z_]*=$/d' -e '/^[A-Z_]*=""$/d' -e "/^[A-Z_]*=''$/d" "$tmp"  # empty -> defaults
     chown root:"$APP_USER" "$tmp"; chmod 640 "$tmp"
@@ -464,7 +462,6 @@ if [[ -n "$BOT_TOKEN" ]]; then
         warn "Бот не запустился, смотрите журнал выше (BOT_TOKEN в $ENV_FILE)"
     fi
     [[ -n "$BOT_ADMIN_IDS" ]] || warn "BOT_ADMIN_IDS пуст — в боте некому управлять реферерами"
-    [[ -n "$VPN_BOT_USERNAME" ]] || warn "VPN_BOT_USERNAME пуст — приглашённым некуда будет перейти из бота"
 fi
 
 if [[ -n "$REMNASHOP_DSN" ]]; then

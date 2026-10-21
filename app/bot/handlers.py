@@ -1,5 +1,5 @@
 """Telegram handlers: admin menu (referrers, payouts, rules), the referrer's own screen and
-the landing for people who open a referrer's link."""
+the "someone should get days" notifications."""
 
 import asyncio
 import logging
@@ -7,7 +7,7 @@ from html import escape
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.filters import Command, CommandStart
 from aiogram.filters.callback_data import CallbackData
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -20,7 +20,6 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from .. import botdb
 from ..config import get_settings
 from . import service as svc
 from . import texts
@@ -42,16 +41,14 @@ class Ref(CallbackData, prefix="r"):
 
 
 class Rule(CallbackData, prefix="g"):
-    act: str  # signup | percent | renewals
+    act: str  # signup
 
 
 class Input(StatesGroup):
     add_query = State()
     payout_days = State()
     signup_days = State()
-    percent = State()
     rule_signup = State()
-    rule_percent = State()
 
 
 def run(fn, *args, **kwargs):
@@ -126,18 +123,16 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         kb.button(text="👥 Рефереры", callback_data=Nav(to="list").pack())
         kb.button(text="➕ Добавить", callback_data=Nav(to="add").pack())
         kb.button(text="⚙️ Правила начисления", callback_data=Nav(to="rules").pack())
-        kb.button(text="🔄 Данные VPN-бота", callback_data=Nav(to="sync").pack())
         if texts.panel_url():
             kb.button(text="🌐 Веб-панель", url=texts.panel_url() + "/admin")
-        kb.adjust(2, 2, 1)
+        kb.adjust(2, 1, 1)
         return kb.as_markup()
 
     async def menu(target, state: FSMContext):
         await state.clear()
         rows = await run(svc.list_referrers)
         rules = await run(svc.get_rules)
-        data = await run(svc.data_status)
-        await show(target, texts.menu(svc.totals(rows), rules, data), menu_kb())
+        await show(target, texts.menu(svc.totals(rows), rules), menu_kb())
 
     @r.message(CommandStart())
     @r.message(Command("menu"))
@@ -166,7 +161,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
             mark = "" if x.partner.is_active else "⏸ "
             due = f" · ⏳{b.due}" if b.due > 0 else ""
             kb.button(
-                text=f"{mark}{x.partner.name[:24]} · 🔗{x.clicks} · 👥{b.referrals} · 💳{b.purchases}{due}",
+                text=f"{mark}{x.partner.name[:24]} · 🔗{x.clicks} · 👥{b.referrals}{due}",
                 callback_data=Ref(act="card", id=x.partner.id).pack(),
             )
         nav = []
@@ -182,7 +177,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         if rows:
             head = (
                 f"<b>Рефереры</b> ({len(rows)}), стр. {page + 1}/{pages}\n"
-                "🔗 перешли · 👥 в VPN · 💳 покупок · ⏳ к выдаче, дн."
+                "🔗 переходов · 👥 рефералов · ⏳ к выдаче, дн."
             )
         else:
             head = "<b>Рефереров пока нет.</b> Нажмите «Добавить»."
@@ -196,8 +191,8 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         await show(
             cb,
             "<b>Новый реферер</b>\n\nПришлите его <b>Telegram ID</b>, <b>@username</b> или перешлите сюда "
-            "любое его сообщение.\n\n@username находится, только если человек уже писал этому боту "
-            "или есть в VPN-боте. Telegram ID подходит всегда (узнать его можно командой /id в этом боте).",
+            "любое его сообщение.\n\n@username находится, только если человек уже писал этому боту. "
+            "Telegram ID подходит всегда (узнать его можно командой /id в этом боте).",
             cancel_kb(),
         )
 
@@ -269,7 +264,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         if b.due > 0:
             kb.button(text=f"🎁 Выдать {texts.days(b.due)}", callback_data=Ref(act="pay", id=pid, arg=b.due).pack())
         kb.button(text="✍️ Выдать другое кол-во", callback_data=Ref(act="pay_custom", id=pid).pack())
-        kb.button(text="👥 Приглашённые", callback_data=Ref(act="invited", id=pid).pack())
+        kb.button(text="👥 Переходы", callback_data=Ref(act="visits", id=pid).pack())
         kb.button(text="📤 Отправить ссылку", callback_data=Ref(act="send_link", id=pid).pack())
         kb.button(text="🔄 Новая ссылка", callback_data=Ref(act="new_link", id=pid).pack())
         kb.button(text="⚙️ Ставки", callback_data=Ref(act="rates", id=pid).pack())
@@ -312,7 +307,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         await show(
             cb,
             f"Выдать <b>{texts.days(callback_data.arg)}</b> рефереру {escape(x.partner.name)}?\n\n"
-            "Сначала продлите ему подписку в VPN-боте / Remnawave, затем подтвердите — "
+            "Сначала продлите ему подписку, затем подтвердите — "
             "бот запишет выдачу и уведомит реферера.",
             kb.as_markup(),
         )
@@ -397,11 +392,11 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         await run(svc.new_link, callback_data.id)
         await card(cb, callback_data.id, "✅ Новая ссылка выпущена — отправьте её рефереру.\n\n")
 
-    @r.callback_query(Ref.filter(F.act == "invited"))
-    async def cb_invited(cb: CallbackQuery, callback_data: Ref):
+    @r.callback_query(Ref.filter(F.act == "visits"))
+    async def cb_visits(cb: CallbackQuery, callback_data: Ref):
         x = await run(svc.get_referrer, callback_data.id)
-        people, total = await run(svc.invited, callback_data.id, 30)
-        await show(cb, texts.invited_list(people, total, x.partner.name), to_card(callback_data.id))
+        rows, total, counted = await run(svc.visits, callback_data.id, 30)
+        await show(cb, texts.visits_list(rows, total, counted, x.partner.name), to_card(callback_data.id))
 
     # ----------------------------------------------------------------- rates
 
@@ -412,49 +407,40 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         defaults = await run(svc.get_rules)
         p, pid = x.partner, x.partner.id
 
-        def own(value, default, unit):
-            return f"<b>{value}{unit}</b> (индивид.)" if value is not None else f"{default}{unit} (по умолчанию)"
-
-        kb = InlineKeyboardBuilder()
-        kb.button(text="Дней за приглашённого", callback_data=Ref(act="set_signup", id=pid).pack())
-        kb.button(text="% от покупки", callback_data=Ref(act="set_percent", id=pid).pack())
-        if p.reward_signup_days is not None or p.reward_percent is not None:
-            kb.button(text="↩️ Сбросить к общим", callback_data=Ref(act="rates_reset", id=pid).pack())
-        kb.button(text="« К рефереру", callback_data=Ref(act="card", id=pid).pack())
-        kb.adjust(2, 1, 1)
-        await show(
-            cb,
-            f"<b>Ставки: {escape(p.name)}</b>\n\n"
-            f"За приглашённого: {own(p.reward_signup_days, defaults.signup_days, ' дн.')}\n"
-            f"От срока покупки: {own(p.reward_percent, defaults.percent, '%')}",
-            kb.as_markup(),
+        own = (
+            f"<b>{texts.days(p.reward_signup_days)}</b> (индивидуальная)"
+            if p.reward_signup_days is not None
+            else f"{texts.days(defaults.signup_days)} (общая)"
         )
+        kb = InlineKeyboardBuilder()
+        kb.button(text="Изменить", callback_data=Ref(act="set_signup", id=pid).pack())
+        if p.reward_signup_days is not None:
+            kb.button(text="↩️ Сбросить к общей", callback_data=Ref(act="rates_reset", id=pid).pack())
+        kb.button(text="« К рефереру", callback_data=Ref(act="card", id=pid).pack())
+        kb.adjust(1)
+        await show(cb, f"<b>Ставка: {escape(p.name)}</b>\n\nЗа каждого реферала: {own}", kb.as_markup())
 
-    @r.callback_query(Ref.filter(F.act.in_({"set_signup", "set_percent"})))
+    @r.callback_query(Ref.filter(F.act == "set_signup"))
     async def cb_set_rate(cb: CallbackQuery, callback_data: Ref, state: FSMContext):
-        signup = callback_data.act == "set_signup"
-        await state.set_state(Input.signup_days if signup else Input.percent)
+        await state.set_state(Input.signup_days)
         await state.update_data(pid=callback_data.id)
-        what = "Сколько дней за каждого приглашённого?" if signup else "Сколько процентов от срока купленной подписки?"
-        await show(cb, what + " Пришлите число.", cancel_kb(callback_data.id))
+        await show(cb, "Сколько дней за каждого реферала? Пришлите число.", cancel_kb(callback_data.id))
 
     @r.message(Input.signup_days)
-    @r.message(Input.percent)
     async def on_rate(m: Message, state: FSMContext):
         pid = (await state.get_data())["pid"]
-        signup = await state.get_state() == Input.signup_days.state
-        n = parse_int(m.text, 0, 3650 if signup else 1000)
+        n = parse_int(m.text, 0, 3650)
         if n is None:
             await m.answer("Нужно целое неотрицательное число.", reply_markup=cancel_kb(pid))
             return
         await state.clear()
-        await run(svc.set_rates, pid, **({"signup_days": n} if signup else {"percent": n}))
+        await run(svc.set_rates, pid, signup_days=n)
         await card(m, pid, "✅ Ставка сохранена.\n\n")
 
     @r.callback_query(Ref.filter(F.act == "rates_reset"))
     async def cb_rates_reset(cb: CallbackQuery, callback_data: Ref):
-        await run(svc.set_rates, callback_data.id, signup_days=None, percent=None)
-        await card(cb, callback_data.id, "✅ Ставки сброшены к общим.\n\n")
+        await run(svc.set_rates, callback_data.id, signup_days=None)
+        await card(cb, callback_data.id, "✅ Ставка сброшена к общей.\n\n")
 
     # ----------------------------------------------------------------- access, toggle, delete
 
@@ -494,7 +480,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         await show(
             cb,
             f"Удалить реферера <b>{escape(x.partner.name)}</b>?\n\nИстория выдач и доступ в панель будут удалены. "
-            "Сами пользователи VPN-бота не пострадают. Если нужно просто приостановить — используйте «Отключить».",
+            "Засчитанные рефералы тоже удалятся. Если нужно просто приостановить — используйте «Отключить».",
             kb.as_markup(),
         )
 
@@ -512,19 +498,14 @@ def build_admin_router(admin_ids: set[int]) -> Router:
     async def rules_screen(target):
         rules = await run(svc.get_rules)
         kb = InlineKeyboardBuilder()
-        kb.button(text=f"За приглашённого: {texts.days(rules.signup_days)}", callback_data=Rule(act="signup").pack())
-        kb.button(text=f"От срока покупки: {rules.percent}%", callback_data=Rule(act="percent").pack())
-        kb.button(
-            text="Продления: учитываются ✅" if rules.renewals else "Продления: не учитываются ❌",
-            callback_data=Rule(act="renewals").pack(),
-        )
+        kb.button(text=f"За реферала: {texts.days(rules.signup_days)} — изменить", callback_data=Rule(act="signup").pack())
         kb.button(text="« Меню", callback_data=Nav(to="menu").pack())
         kb.adjust(1)
         await show(
             target,
-            "<b>Правила начисления</b> (для всех, у кого нет индивидуальных ставок)\n\n"
+            "<b>Правила начисления</b> (для всех, у кого нет индивидуальной ставки)\n\n"
             f"{escape(texts.rules_line(rules))}.\n\n"
-            "Возврат платежа отменяет начисление. Изменение правил пересчитывает и уже начисленные дни.",
+            "Изменение пересчитывает и уже начисленные дни.",
             kb.as_markup(),
         )
 
@@ -533,56 +514,20 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         await state.clear()
         await rules_screen(cb)
 
-    @r.callback_query(Rule.filter(F.act == "renewals"))
-    async def cb_rule_renewals(cb: CallbackQuery):
-        rules = await run(svc.get_rules)
-        await run(svc.update_rules, renewals=not rules.renewals)
-        await rules_screen(cb)
-
-    @r.callback_query(Rule.filter(F.act.in_({"signup", "percent"})))
-    async def cb_rule_value(cb: CallbackQuery, callback_data: Rule, state: FSMContext):
-        signup = callback_data.act == "signup"
-        await state.set_state(Input.rule_signup if signup else Input.rule_percent)
-        what = "Сколько дней за каждого приглашённого?" if signup else "Сколько процентов от срока купленной подписки?"
-        await show(cb, what + " Пришлите число.", back("rules", "Отмена"))
+    @r.callback_query(Rule.filter(F.act == "signup"))
+    async def cb_rule_value(cb: CallbackQuery, state: FSMContext):
+        await state.set_state(Input.rule_signup)
+        await show(cb, "Сколько дней за каждого реферала? Пришлите число.", back("rules", "Отмена"))
 
     @r.message(Input.rule_signup)
-    @r.message(Input.rule_percent)
     async def on_rule_value(m: Message, state: FSMContext):
-        signup = await state.get_state() == Input.rule_signup.state
-        n = parse_int(m.text, 0, 3650 if signup else 1000)
+        n = parse_int(m.text, 0, 3650)
         if n is None:
             await m.answer("Нужно целое неотрицательное число.", reply_markup=back("rules", "Отмена"))
             return
         await state.clear()
-        await run(svc.update_rules, **({"signup_days": n} if signup else {"percent": n}))
+        await run(svc.update_rules, signup_days=n)
         await rules_screen(m)
-
-    # ----------------------------------------------------------------- sync
-
-    @r.callback_query(Nav.filter(F.to == "sync"))
-    async def cb_sync(cb: CallbackQuery):
-        data = await run(svc.data_status)
-        if not botdb.enabled():
-            await show(
-                cb,
-                "<b>Данные из VPN-бота</b>\n\n"
-                f"Последнее поступление: {texts._ago(data['last'])} · событий всего: {data['events']}\n\n"
-                "Регистрации и покупки присылает скрипт синхронизации на сервере VPN-бота "
-                "(<code>deploy/install_remnashop_sync.sh</code>), раз в минуту. Если данные не идут — "
-                "проверьте там <code>systemctl status kago-sync</code>.",
-                back(),
-            )
-            return
-        await cb.answer("Синхронизирую…")
-        summary = await run(botdb.sync_once)
-        if summary.get("skipped"):
-            text = f"Синхронизация уже идёт ({summary['skipped']}). Данные обновятся через минуту."
-        elif summary.get("error"):
-            text = f"❌ Ошибка синхронизации:\n<code>{escape(summary['error'][:500])}</code>"
-        else:
-            text = f"✅ Синхронизировано. Новых записей: {summary['accepted']}."
-        await show(cb.message, text, back())
 
     @r.message(Command("id"))
     async def cmd_id(m: Message):
@@ -601,12 +546,9 @@ def build_admin_router(admin_ids: set[int]) -> Router:
 def build_referrer_router() -> Router:
     r = Router(name="referrer")
 
-    def vpn_kb() -> InlineKeyboardMarkup | None:
-        vpn = get_settings().vpn_bot_username.lstrip("@")
-        if not vpn:
-            return None
+    def site_kb() -> InlineKeyboardMarkup:
         b = InlineKeyboardBuilder()
-        b.button(text="🚀 Перейти в KAGO VPN", url=f"https://t.me/{vpn}")
+        b.button(text="🌐 KAGO VPN", url=get_settings().referral_redirect_url)
         return b.as_markup()
 
     def kb() -> InlineKeyboardMarkup:
@@ -620,26 +562,9 @@ def build_referrer_router() -> Router:
     async def home(target, user_id: int):
         x = await run(svc.referrer_by_telegram, user_id)
         if not x or not x.partner.is_active:
-            await show(target, texts.not_registered(user_id), vpn_kb())
+            await show(target, texts.not_registered(user_id), site_kb())
             return
         await show(target, texts.referrer_home(x), kb())
-
-    @r.message(CommandStart(deep_link=True, magic=F.args.startswith(svc.START_PREFIX)))
-    async def cmd_invite(m: Message, command: CommandObject):
-        u = m.from_user
-        name = " ".join(x for x in (u.first_name, u.last_name) if x)
-        status, partner = await run(
-            svc.register_invite, command.args[len(svc.START_PREFIX):], u.id, u.username, name
-        )
-        if status == "mine":
-            await m.answer("Это ваша собственная ссылка — отправьте её друзьям 🙂")
-            await home(m, u.id)
-            return
-        await m.answer(
-            texts.invite_welcome(partner.name if status == "ok" else None),
-            reply_markup=vpn_kb(),
-            disable_web_page_preview=True,
-        )
 
     @r.message(CommandStart())
     @r.message(Command("stats"))
@@ -695,13 +620,25 @@ def setup(dp: Dispatcher, admin_ids: set[int]) -> None:
 # =========================================================================== notifications
 
 
-async def notify_loop(bot: Bot, interval: int) -> None:
-    """Tell referrers about new invites and purchases."""
+def due_kb(x: svc.Referrer) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    due = x.balance.due
+    kb.button(text=f"✅ Выдал {texts.days(due)}", callback_data=Ref(act="pay_ok", id=x.partner.id, arg=due).pack())
+    kb.button(text="Открыть карточку", callback_data=Ref(act="card", id=x.partner.id).pack())
+    kb.adjust(1)
+    return kb.as_markup()
+
+
+async def notify_loop(bot: Bot, interval: int, admin_ids: set[int]) -> None:
+    """New referrals: the referrer is told, the admins get "issue N days" with a button."""
     await asyncio.sleep(5)
     while True:
         try:
             for change in await run(svc.collect_changes):
                 await notify(bot, change.telegram_id, texts.change_message(change))
+                if change.referrer.balance.due > 0:
+                    for admin_id in admin_ids:
+                        await notify(bot, admin_id, texts.due_message(change), due_kb(change.referrer))
                 await asyncio.sleep(0.05)  # stay far below Telegram's rate limits
         except Exception:
             log.exception("notification round failed")

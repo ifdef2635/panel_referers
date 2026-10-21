@@ -13,7 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from .config import get_settings
 from .db import SessionLocal, engine, init_db
 from .models import ROLE_ADMIN, Account
-from . import botdb, ingest
+from . import botdb, ingest, referrals
 from .routes import admin, auth, partner
 from .security import hash_password
 from .web import BASE_DIR, LoginRequired, render
@@ -81,6 +81,7 @@ app.add_middleware(
 
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "static")), name="static")
 app.include_router(ingest.router)
+app.include_router(referrals.router)
 app.include_router(auth.router)
 app.include_router(partner.router)
 app.include_router(admin.router)

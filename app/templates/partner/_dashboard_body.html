@@ -1,14 +1,9 @@
 {% from "macros.html" import period_picker, kpis, chart_block, balance_card, payments_table, geo_platforms with context %}
+<div class="card notice">Реферальная ссылка: <code>{{ invite_link }}</code>
+  <span class="muted sm">· переходов: {{ visits.total|num }}, засчитано рефералов: {{ visits.counted|num }}</span></div>
 {% if no_sources %}
-  <div class="card notice">
-    {% if me.is_admin %}
-      У партнёра нет привязанных источников. Добавьте реферера или рекламную ссылку во вкладке <a href="/admin/partners/{{ partner.id }}/settings">«Настройки»</a>.
-    {% else %}
-      К вашему аккаунту ещё не привязаны источники трафика. Обратитесь к администратору.
-    {% endif %}
-  </div>
+  {{ balance_card(balance) }}
 {% else %}
-  {% if invite_link %}<div class="card notice">Реферальная ссылка: <code>{{ invite_link }}</code></div>{% endif %}
   {{ period_picker(period, base) }}
   {{ kpis(stats, period, earned) }}
   {{ chart_block(chart) }}

@@ -56,7 +56,7 @@ class Account(Base):
     reward_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Legacy, not used: the link is built from invite_code (see app/bot/service.py).
     referral_link: Mapped[str] = mapped_column(String(255), default="")
-    # Code of the partner's own link to the Telegram bot: t.me/<bot>?start=r_<code>.
+    # Code of the partner's referral link: <PUBLIC_URL>/r/<code>.
     invite_code: Mapped[str | None] = mapped_column(String(32), unique=True, nullable=True)
     include_second_level: Mapped[bool] = mapped_column(Boolean, default=False)
     show_contacts: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -115,21 +115,26 @@ class Payout(Base):
     partner: Mapped[Account] = relationship(back_populates="payouts", foreign_keys=[partner_id])
 
 
-class Invite(Base):
-    """Someone who opened a partner's link in the Telegram bot. The first partner wins.
+class ReferralVisit(Base):
+    """Someone opened a partner link (/r/<code> on the panel domain) and was sent to the site.
 
-    The invite counts once that Telegram user shows up as a VPN-bot user registered after the
-    click (bot_users.telegram_id, filled by the sync); purchases are matched the same way.
+    counted=False visits are kept for the admin with the reason: repeat (this browser already
+    came through a link — the first partner wins), ip (the same address was counted in the last
+    30 days), bot (link previews, crawlers), off (partner disabled).
     """
 
-    __tablename__ = "invites"
+    __tablename__ = "referral_visits"
+    __table_args__ = (Index("ix_referral_visits_ip", "ip_hash", "created_at"),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True)
     partner_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
-    username: Mapped[str | None] = mapped_column(String(64))
-    name: Mapped[str] = mapped_column(String(255), default="")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    visitor_id: Mapped[str] = mapped_column(String(32), index=True)  # cookie
+    ip_hash: Mapped[str] = mapped_column(String(64))  # salted, /64 for IPv6
+    user_agent: Mapped[str] = mapped_column(String(255), default="")
+    referer: Mapped[str] = mapped_column(String(255), default="")
+    counted: Mapped[bool] = mapped_column(Boolean, default=False)
+    reason: Mapped[str] = mapped_column(String(16), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
 
 
 class BotContact(Base):

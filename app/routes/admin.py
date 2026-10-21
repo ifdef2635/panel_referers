@@ -22,10 +22,10 @@ from ..models import (
     Payout,
 )
 from ..security import hash_password
+from ..referrals import referral_link
 from ..services import (
     chart_payload,
     default_rules,
-    invite_link,
     partner_scope,
     partners,
     resolve_period,
@@ -284,7 +284,7 @@ def partner_settings(
         partner=p,
         balance=reward_balance(db, p),
         defaults=default_rules(db),
-        invite_link=invite_link(db, p),
+        invite_link=referral_link(db, p),
         source_list=rs.source_list(),
         taken_sources=taken,
     )

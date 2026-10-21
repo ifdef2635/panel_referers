@@ -4,10 +4,10 @@ from sqlalchemy.orm import Session
 from .. import analytics as rs
 from ..db import get_db
 from ..models import Account
+from ..referrals import referral_link, visit_counts
 from ..services import (
     chart_payload,
     earned_in_period,
-    invite_link,
     partner_scope,
     resolve_period,
     reward_balance,
@@ -30,7 +30,8 @@ def partner_dashboard_context(db: Session, partner: Account, request: Request) -
         "chart": chart_payload(scope, period) if not scope.empty else None,
         "balance": reward_balance(db, partner),
         "earned": earned_in_period(db, partner, period.start, period.end),
-        "invite_link": invite_link(db, partner),
+        "invite_link": referral_link(db, partner),
+        "visits": visit_counts(db, partner.id),
         "recent": rs.recent_payments(scope, 15),
         "geo": rs.geography(scope, period.start, period.end),
         "platforms": rs.platforms(scope),

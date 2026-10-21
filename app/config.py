@@ -29,8 +29,8 @@ class Settings(BaseSettings):
     bot_token: str = ""
     # Telegram IDs of the bot admins, comma-separated.
     bot_admin_ids: str = ""
-    # Username of the VPN bot (without @): people who open a referrer link are sent there.
-    vpn_bot_username: str = ""
+    # Where people who open a referral link (<PUBLIC_URL>/r/<code>) are sent.
+    referral_redirect_url: str = "https://usekago.net"
     # How often referrers get "new invites / purchases" messages; 0 = off.
     bot_notify_seconds: int = 300
 
