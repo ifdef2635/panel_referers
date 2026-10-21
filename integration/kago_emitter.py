@@ -113,6 +113,16 @@ def referral_attached(referred_id: int, referrer_id: int) -> None:
     emit("referral.attached", f"ref:{referred_id}", {"user_id": referred_id, "referrer_id": referrer_id})
 
 
+def plan_days(plan: dict) -> int | None:
+    """Plan duration in days from a Remnashop plan snapshot (None for unlimited / unknown)."""
+    d = plan.get("duration")
+    if isinstance(d, dict):
+        d = d.get("days")
+    elif d is not None and not isinstance(d, int):
+        d = getattr(d, "days", None)
+    return d if isinstance(d, int) and not isinstance(d, bool) and d > 0 else None
+
+
 def payment_completed(tx: Any) -> None:
     pricing = tx.pricing if isinstance(tx.pricing, dict) else vars(tx.pricing)
     plan = tx.plan_snapshot if isinstance(tx.plan_snapshot, dict) else vars(tx.plan_snapshot)
@@ -126,6 +136,7 @@ def payment_completed(tx: Any) -> None:
             "currency": str(_val(tx.currency)),
             "purchase_type": str(_val(tx.purchase_type)),
             "plan": plan.get("name"),
+            "duration_days": plan_days(plan),
             "gateway": str(_val(tx.gateway_type)),
             "is_test": bool(tx.is_test),
         },

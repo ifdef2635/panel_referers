@@ -243,16 +243,22 @@ def h_payment_completed(db: Session, ts: datetime, data: dict) -> None:
         purchase_type = purchase_type.upper()
         if purchase_type not in PURCHASE_TYPES:
             raise EventError("data.purchase_type: NEW / RENEW / CHANGE")
+    duration = data.get("duration_days")
+    if duration is not None and (isinstance(duration, bool) or not isinstance(duration, int)):
+        raise EventError("data.duration_days: целое число дней")
+    if duration is not None and not 0 < duration <= 36500:
+        duration = None  # unlimited plans (0 / -1) earn no percentage reward
     db.connection().exec_driver_sql(
         """
         INSERT INTO payments (payment_id, user_id, paid_at, amount, currency, purchase_type,
-                              plan, gateway, is_test)
+                              plan, duration_days, gateway, is_test)
         VALUES (%(payment_id)s, %(user_id)s, %(ts)s, %(amount)s, %(currency)s, %(purchase_type)s,
-                %(plan)s, %(gateway)s, %(is_test)s)
+                %(plan)s, %(duration)s, %(gateway)s, %(is_test)s)
         ON CONFLICT (payment_id) DO UPDATE SET
           user_id = EXCLUDED.user_id, paid_at = EXCLUDED.paid_at, amount = EXCLUDED.amount,
           currency = EXCLUDED.currency, purchase_type = EXCLUDED.purchase_type,
-          plan = EXCLUDED.plan, gateway = EXCLUDED.gateway, is_test = EXCLUDED.is_test
+          plan = EXCLUDED.plan, gateway = EXCLUDED.gateway, is_test = EXCLUDED.is_test,
+          duration_days = COALESCE(EXCLUDED.duration_days, payments.duration_days)
         """,
         {
             "payment_id": payment_id,
@@ -262,6 +268,7 @@ def h_payment_completed(db: Session, ts: datetime, data: dict) -> None:
             "currency": currency,
             "purchase_type": purchase_type,
             "plan": _str(data, "plan"),
+            "duration": duration,
             "gateway": _str(data, "gateway", max_len=64),
             "is_test": bool(_bool(data, "is_test")),
         },

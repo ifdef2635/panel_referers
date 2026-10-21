@@ -103,7 +103,7 @@ class Scope:
                 SELECT p.payment_id, p.user_id, p.paid_at AS created_at, p.currency,
                        COALESCE(p.gateway, '—') AS gateway,
                        COALESCE(p.purchase_type, '—') AS purchase_type,
-                       COALESCE(p.plan, '—') AS plan, p.amount
+                       COALESCE(p.plan, '—') AS plan, p.amount, p.duration_days
                 FROM payments p {join}
                 WHERE p.paid_at IS NOT NULL AND p.amount > 0 AND NOT p.is_test
                   AND p.refunded_at IS NULL
@@ -344,6 +344,50 @@ def buyers_total(scope: Scope) -> int:
         ),
     )
     return int(row["n"]) if row else 0
+
+
+def reward_base(
+    scope: Scope, renewals: bool, start: datetime | None = None, end: datetime | None = None
+) -> dict[str, int]:
+    """What partner rewards are computed from: attracted users and purchased subscription days.
+
+    renewals=False counts only the first purchase of every user. start/end limit the window
+    (registration date for referrals, payment date for purchases); None means all time.
+    """
+    zero = {"referrals": 0, "buyers": 0, "purchases": 0, "purchases_no_duration": 0, "days": 0}
+    if scope.empty:
+        return zero
+    p = scope.params() | {"renewals": renewals, "start": start, "end": end}
+    window = "(%(start)s::timestamptz IS NULL OR {col} >= %(start)s) AND (%(end)s::timestamptz IS NULL OR {col} < %(end)s)"
+
+    def produce():
+        row = fetch_one(
+            _with(scope, paid=True)
+            + f""",
+            counted AS (
+                SELECT user_id, created_at, duration_days FROM paid WHERE %(renewals)s
+                UNION ALL
+                SELECT user_id, created_at, duration_days FROM (
+                    SELECT DISTINCT ON (user_id) user_id, created_at, duration_days FROM paid
+                    WHERE user_id IS NOT NULL ORDER BY user_id, created_at
+                ) f WHERE NOT %(renewals)s
+            )
+            SELECT
+              (SELECT COUNT(*) FROM scope s LEFT JOIN bot_users u ON u.user_id = s.user_id
+                 WHERE (%(start)s::timestamptz IS NULL AND %(end)s::timestamptz IS NULL)
+                    OR ({window.format(col="u.registered_at")})) AS referrals,
+              COUNT(DISTINCT c.user_id) AS buyers,
+              COUNT(*) AS purchases,
+              COUNT(*) - COUNT(c.duration_days) AS purchases_no_duration,
+              COALESCE(SUM(c.duration_days), 0) AS days
+            FROM counted c
+            WHERE {window.format(col="c.created_at")}
+            """,
+            p,
+        )
+        return {k: int(row[k] or 0) for k in zero} if row else zero
+
+    return cached(("reward_base", scope, renewals, start, end), produce)
 
 
 USER_FILTERS = ("all", "buyers", "active", "trial", "no_purchase")

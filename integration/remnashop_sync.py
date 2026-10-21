@@ -89,6 +89,10 @@ def payments(cur, since: datetime):
         SELECT payment_id, user_id, status::text AS status, is_test, purchase_type::text AS purchase_type,
                gateway_type::text AS gateway, currency::text AS currency,
                pricing->>'final_amount' AS amount, plan_snapshot->>'name' AS plan,
+               CASE jsonb_typeof(plan_snapshot->'duration')
+                    WHEN 'number' THEN (plan_snapshot->>'duration')::numeric::int
+                    WHEN 'object' THEN (plan_snapshot->'duration'->>'days')::numeric::int
+               END AS duration_days,
                created_at, updated_at
         FROM transactions
         WHERE status IN ('COMPLETED', 'REFUNDED') AND updated_at > %(since)s
@@ -101,7 +105,7 @@ def payments(cur, since: datetime):
         top = max(top, t["updated_at"])
         events.append(
             {
-                "id": f"payment:{t['payment_id']}",
+                "id": f"payment:{t['payment_id']}:v2",
                 "type": "payment.completed",
                 "ts": iso(t["created_at"]),
                 "data": {
@@ -111,6 +115,7 @@ def payments(cur, since: datetime):
                     "currency": t["currency"],
                     "purchase_type": t["purchase_type"],
                     "plan": t["plan"],
+                    "duration_days": t["duration_days"] if (t["duration_days"] or 0) > 0 else None,
                     "gateway": t["gateway"],
                     "is_test": t["is_test"],
                 },
@@ -175,7 +180,9 @@ def subscriptions(cur, since: datetime):
     return events, top
 
 
-COLLECTORS = {"users": users, "payments": payments, "subscriptions": subscriptions}
+# The key is also the cursor name: "payments_v2" starts payments from scratch once, so payments
+# synced before duration_days existed are re-sent with it.
+COLLECTORS = {"users": users, "payments_v2": payments, "subscriptions": subscriptions}
 
 # Columns the collectors read. information_schema only lists columns the role may SELECT,
 # so a missing entry means either an incompatible schema or missing grants.

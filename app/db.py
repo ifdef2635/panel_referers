@@ -15,10 +15,22 @@ engine = create_engine(get_settings().database_url, pool_pre_ping=True, pool_siz
 SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 
+# create_all() does not touch existing tables: columns added after the first release go here.
+MIGRATIONS = (
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reward_signup_days INTEGER",
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS reward_percent INTEGER",
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS referral_link VARCHAR(255) NOT NULL DEFAULT ''",
+    "ALTER TABLE payments ADD COLUMN IF NOT EXISTS duration_days INTEGER",
+)
+
+
 def init_db() -> None:
     from . import models  # noqa: F401
 
     Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        for sql in MIGRATIONS:
+            conn.exec_driver_sql(sql)
 
 
 def get_db() -> Iterator[Session]:

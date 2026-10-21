@@ -11,7 +11,7 @@
     <label>Логин для входа<input name="login" value="{{ prefill.login or '' }}" pattern="[a-z0-9_.\-]{3,64}" required></label>
     <label>Пароль<input name="password" value="{{ suggested_password }}" minlength="8" required></label>
     <label>Telegram ID (куда выдавать дни)<input name="telegram_id" value="{{ prefill.telegram_id or '' }}" inputmode="numeric"></label>
-    <p class="muted sm">Ставка по умолчанию: {{ default_days }} дн. за каждого купившего. Изменить можно в настройках партнёра.</p>
+    <p class="muted sm">Вознаграждение по умолчанию: {{ rules.describe() }}. Изменить можно в настройках партнёра.</p>
     <button class="btn primary">Создать</button>
   </form>
 </section>

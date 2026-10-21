@@ -21,7 +21,7 @@
   {% else %}<div>0</div>{% endif %}
 {% endmacro %}
 
-{% macro kpis(stats, period, rate=None) %}
+{% macro kpis(stats, period, earned=None) %}
 <div class="kpis">
   <div class="kpi">
     <div class="kpi-label">Регистрации</div>
@@ -52,11 +52,11 @@
     <div class="kpi-value">{{ stats.active_paid|num }}</div>
     <div class="kpi-sub">+ {{ stats.active_trial|num }} на триале · триалов за период: {{ stats.trials|num }}</div>
   </div>
-  {% if rate is not none %}
+  {% if earned is not none %}
   <div class="kpi accent">
     <div class="kpi-label">Заработано за период</div>
-    <div class="kpi-value">{{ (stats.new_buyers * rate)|days }}</div>
-    <div class="kpi-sub">{{ rate }} дн. × {{ stats.new_buyers|num }} покупателей</div>
+    <div class="kpi-value">{{ earned.total|days }}</div>
+    <div class="kpi-sub">{{ earned.signup_reward|num }} за {{ earned.referrals|num }} приглаш. + {{ earned.purchase_reward|num }} за {{ earned.purchases|num }} покуп.</div>
   </div>
   {% endif %}
 </div>
@@ -82,13 +82,14 @@
 <section class="card balance">
   <h3>Вознаграждение (дни подписки)</h3>
   <div class="balance-grid">
-    <div><div class="kpi-label">Ставка</div><div class="big">{{ balance.rate }} дн.</div><div class="muted sm">за каждого купившего</div></div>
-    <div><div class="kpi-label">Купивших всего</div><div class="big">{{ balance.buyers|num }}</div></div>
+    <div><div class="kpi-label">Приглашено</div><div class="big">{{ balance.referrals|num }}</div><div class="muted sm">× {{ balance.rules.signup_days }} дн. = {{ balance.signup_reward|num }}</div></div>
+    <div><div class="kpi-label">Покупки</div><div class="big">{{ balance.purchases|num }}</div><div class="muted sm">{{ balance.rules.percent }}% от {{ balance.plan_days|num }} дн. = {{ balance.purchase_reward|num }}</div></div>
     <div><div class="kpi-label">Начислено</div><div class="big">{{ balance.accrued|days }}</div></div>
     <div><div class="kpi-label">Выдано</div><div class="big">{{ balance.issued|days }}</div></div>
     <div class="due {{ 'pos' if balance.due > 0 }}"><div class="kpi-label">К выдаче</div><div class="big">{{ balance.due|days }}</div></div>
   </div>
-  {% if show_hint %}<p class="muted sm">Начисление — один раз за каждого приведённого пользователя, совершившего хотя бы одну оплату подписки. Возврат платежа отменяет начисление.</p>{% endif %}
+  {% if show_hint %}<p class="muted sm">{{ balance.rules.signup_days }} дн. за каждого приглашённого пользователя и {{ balance.rules.percent }}% от срока {{ 'каждой купленной' if balance.rules.renewals else 'первой купленной' }} подписки. Возврат платежа отменяет начисление.</p>{% endif %}
+  {% if balance.purchases_no_duration %}<p class="muted sm">Покупок без известного срока тарифа (не начисляются): {{ balance.purchases_no_duration|num }}.</p>{% endif %}
 </section>
 {% endmacro %}
 

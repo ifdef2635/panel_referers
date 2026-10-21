@@ -9,7 +9,7 @@
   </div>
 {% else %}
   {{ period_picker(period, base) }}
-  {{ kpis(stats, period, balance.rate) }}
+  {{ kpis(stats, period, earned) }}
   {{ chart_block(chart) }}
   {{ balance_card(balance) }}
   {{ geo_platforms(geo, platforms) }}

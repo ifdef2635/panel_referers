@@ -6,19 +6,19 @@
   <h3>Баланс партнёров (дни)</h3>
   <div class="table-wrap">
   <table class="table">
-    <thead><tr><th>Партнёр</th><th>Telegram ID</th><th class="r">Купивших</th><th class="r">Начислено</th><th class="r">Выдано</th><th class="r">К выдаче</th><th></th></tr></thead>
+    <thead><tr><th>Партнёр</th><th>Telegram ID</th><th class="r">Приглашено</th><th class="r">Купивших</th><th class="r">Начислено</th><th class="r">Выдано</th><th class="r">К выдаче</th><th></th></tr></thead>
     <tbody>
     {% for r in rows %}
       {% set p = r.partner %}{% set b = r.balance %}
       <tr>
         <td><a href="/admin/partners/{{ p.id }}">{{ p.name }}</a></td>
         <td>{{ p.telegram_id or '—' }}</td>
-        <td class="r">{{ b.buyers|num }}</td><td class="r">{{ b.accrued|num }}</td><td class="r">{{ b.issued|num }}</td>
+        <td class="r">{{ b.referrals|num }}</td><td class="r">{{ b.buyers|num }}</td><td class="r">{{ b.accrued|num }}</td><td class="r">{{ b.issued|num }}</td>
         <td class="r"><b class="{{ 'pos' if b.due > 0 }}">{{ b.due|num }}</b></td>
         <td class="r">{% if b.due > 0 %}<a class="btn sm" href="/admin/partners/{{ p.id }}/settings">Выдать</a>{% endif %}</td>
       </tr>
     {% else %}
-      <tr><td colspan="7" class="empty">Партнёров нет</td></tr>
+      <tr><td colspan="8" class="empty">Партнёров нет</td></tr>
     {% endfor %}
     </tbody>
   </table>

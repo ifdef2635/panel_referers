@@ -8,7 +8,8 @@ from . import analytics as rs
 from .config import get_settings
 from .db import fetch_one
 from .models import (
-    DEFAULT_REWARD_DAYS,
+    DEFAULT_PURCHASE_PERCENT,
+    DEFAULT_SIGNUP_DAYS,
     ROLE_PARTNER,
     SOURCE_AD,
     SOURCE_REFERRER,
@@ -33,15 +34,48 @@ def set_setting(db: Session, key: str, value: str) -> None:
         db.add(Setting(key=key, value=value))
 
 
-def default_reward_days(db: Session) -> int:
+def _int_setting(db: Session, key: str, default: int) -> int:
     try:
-        return int(get_setting(db, "reward_days", str(DEFAULT_REWARD_DAYS)))
+        return int(get_setting(db, key, str(default)))
     except ValueError:
-        return DEFAULT_REWARD_DAYS
+        return default
 
 
-def reward_days_for(db: Session, partner: Account) -> int:
-    return partner.reward_days if partner.reward_days is not None else default_reward_days(db)
+@dataclass(frozen=True)
+class RewardRules:
+    signup_days: int  # days for every attracted user
+    percent: int  # % of the purchased subscription days
+    renewals: bool  # every purchase counts (False: only the first purchase of a user)
+
+    def purchase_days(self, plan_days: int) -> int:
+        return plan_days * self.percent // 100
+
+    def describe(self) -> str:
+        what = "каждой покупки" if self.renewals else "первой покупки"
+        return f"{self.signup_days} дн. за приглашённого + {self.percent}% срока {what}"
+
+
+def default_rules(db: Session) -> RewardRules:
+    return RewardRules(
+        signup_days=_int_setting(db, "reward_signup_days", DEFAULT_SIGNUP_DAYS),
+        percent=_int_setting(db, "reward_percent", DEFAULT_PURCHASE_PERCENT),
+        renewals=get_setting(db, "reward_renewals", "1") == "1",
+    )
+
+
+def save_default_rules(db: Session, signup_days: int, percent: int, renewals: bool) -> None:
+    set_setting(db, "reward_signup_days", str(signup_days))
+    set_setting(db, "reward_percent", str(percent))
+    set_setting(db, "reward_renewals", "1" if renewals else "0")
+
+
+def reward_rules(db: Session, partner: Account, defaults: RewardRules | None = None) -> RewardRules:
+    d = defaults or default_rules(db)
+    return RewardRules(
+        signup_days=d.signup_days if partner.reward_signup_days is None else partner.reward_signup_days,
+        percent=d.percent if partner.reward_percent is None else partner.reward_percent,
+        renewals=d.renewals,
+    )
 
 
 # --------------------------------------------------------------------------- scope
@@ -60,21 +94,49 @@ def partner_scope(partner: Account) -> rs.Scope:
 
 @dataclass
 class RewardBalance:
-    rate: int  # days per buyer
-    buyers: int  # attracted users with at least one purchase (all time)
+    rules: RewardRules
+    referrals: int  # attracted users (all time)
+    buyers: int  # attracted users with a counted purchase
+    purchases: int  # counted purchases
+    purchases_no_duration: int  # purchases whose plan duration is unknown (earn nothing)
+    plan_days: int  # total days of the counted purchases
+    signup_reward: int  # days
+    purchase_reward: int  # days
     accrued: int  # days
     issued: int  # days
     due: int  # days left to issue
 
 
-def reward_balance(db: Session, partner: Account) -> RewardBalance:
-    rate = reward_days_for(db, partner)
-    buyers = rs.buyers_total(partner_scope(partner))
-    issued = db.scalar(
-        select(func.coalesce(func.sum(Payout.days), 0)).where(Payout.partner_id == partner.id)
+def reward_balance(db: Session, partner: Account, defaults: RewardRules | None = None) -> RewardBalance:
+    rules = reward_rules(db, partner, defaults)
+    base = rs.reward_base(partner_scope(partner), rules.renewals)
+    issued = int(
+        db.scalar(select(func.coalesce(func.sum(Payout.days), 0)).where(Payout.partner_id == partner.id))
     )
-    accrued = buyers * rate
-    return RewardBalance(rate, buyers, accrued, int(issued), accrued - int(issued))
+    signup = base["referrals"] * rules.signup_days
+    purchase = rules.purchase_days(base["days"])
+    accrued = signup + purchase
+    return RewardBalance(
+        rules=rules,
+        referrals=base["referrals"],
+        buyers=base["buyers"],
+        purchases=base["purchases"],
+        purchases_no_duration=base["purchases_no_duration"],
+        plan_days=base["days"],
+        signup_reward=signup,
+        purchase_reward=purchase,
+        accrued=accrued,
+        issued=issued,
+        due=accrued - issued,
+    )
+
+
+def earned_in_period(db: Session, partner: Account, start: datetime, end: datetime) -> dict:
+    rules = reward_rules(db, partner)
+    base = rs.reward_base(partner_scope(partner), rules.renewals, start, end)
+    signup = base["referrals"] * rules.signup_days
+    purchase = rules.purchase_days(base["days"])
+    return base | {"signup_reward": signup, "purchase_reward": purchase, "total": signup + purchase, "rules": rules}
 
 
 def partners(db: Session) -> list[Account]:

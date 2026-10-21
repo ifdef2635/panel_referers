@@ -24,7 +24,9 @@ ROLE_PARTNER = "partner"
 SOURCE_REFERRER = "referrer"  # bot user whose referral link brings people (ref = users.id in the bot)
 SOURCE_AD = "source"  # ad link / source name sent in user.registered.data.source
 
-DEFAULT_REWARD_DAYS = 3
+# Reward rules (global defaults, can be overridden per partner)
+DEFAULT_SIGNUP_DAYS = 1  # days for every attracted user
+DEFAULT_PURCHASE_PERCENT = 50  # % of the purchased subscription duration
 
 
 def utcnow() -> datetime:
@@ -47,8 +49,13 @@ class Account(Base):
     session_version: Mapped[int] = mapped_column(Integer, default=1)
 
     # Partner settings
-    # Days of subscription per attracted buyer; None = global default.
+    # Legacy: days per attracted buyer. Kept for old databases, not used any more.
     reward_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Reward overrides; None = global default (see services.reward_rules).
+    reward_signup_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reward_percent: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Link the partner shares (the referral link of their bot account), shown in the Telegram bot.
+    referral_link: Mapped[str] = mapped_column(String(255), default="")
     include_second_level: Mapped[bool] = mapped_column(Boolean, default=False)
     show_contacts: Mapped[bool] = mapped_column(Boolean, default=False)
     # Telegram ID of the partner (where rewarded days go), informational.
@@ -170,6 +177,8 @@ class Payment(Base):
     currency: Mapped[str | None] = mapped_column(String(8))
     purchase_type: Mapped[str | None] = mapped_column(String(16))
     plan: Mapped[str | None] = mapped_column(String(128))
+    # Duration of the purchased plan in days (None = unknown or unlimited).
+    duration_days: Mapped[int | None] = mapped_column(Integer)
     gateway: Mapped[str | None] = mapped_column(String(64))
     is_test: Mapped[bool] = mapped_column(Boolean, default=False)
     # A refund may arrive before the payment itself; the row then has no amount yet.

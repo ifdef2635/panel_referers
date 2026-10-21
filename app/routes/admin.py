@@ -24,12 +24,12 @@ from ..models import (
 from ..security import hash_password
 from ..services import (
     chart_payload,
-    default_reward_days,
+    default_rules,
     partner_scope,
     partners,
     resolve_period,
     reward_balance,
-    set_setting,
+    save_default_rules,
 )
 from ..web import flash, render, require_admin, verify_csrf
 from .partner import partner_dashboard_context, partner_users_context
@@ -76,13 +76,14 @@ def dashboard(request: Request, me: Account = Depends(require_admin), db: Sessio
     scope = rs.Scope(all_users=True)
 
     board = []
+    defaults = default_rules(db)
     for p in partners(db):
         ps = partner_scope(p)
         board.append(
             {
                 "partner": p,
                 "stats": rs.overview(ps, period.start, period.end),
-                "balance": reward_balance(db, p),
+                "balance": reward_balance(db, p, defaults),
             }
         )
     board.sort(key=lambda r: (r["stats"]["new_buyers"], r["stats"]["registrations"]), reverse=True)
@@ -144,7 +145,8 @@ def clear_cache(request: Request, me: Account = Depends(require_admin)):
 
 @router.get("/partners")
 def partner_list(request: Request, me: Account = Depends(require_admin), db: Session = Depends(get_db)):
-    rows = [{"partner": p, "balance": reward_balance(db, p)} for p in partners(db)]
+    defaults = default_rules(db)
+    rows = [{"partner": p, "balance": reward_balance(db, p, defaults)} for p in partners(db)]
     return render(request, "admin/partners.html", me, rows=rows)
 
 
@@ -168,7 +170,7 @@ def partner_new_form(
         "admin/partner_new.html",
         me,
         prefill=prefill,
-        default_days=default_reward_days(db),
+        rules=default_rules(db),
         suggested_password=secrets.token_urlsafe(9),
     )
 
@@ -280,7 +282,7 @@ def partner_settings(
         tab="settings",
         partner=p,
         balance=reward_balance(db, p),
-        default_days=default_reward_days(db),
+        defaults=default_rules(db),
         source_list=rs.source_list(),
         taken_sources=taken,
     )
@@ -292,7 +294,9 @@ def partner_edit(
     request: Request,
     name: str = Form(""),
     telegram_id: str = Form(""),
-    reward_days: str = Form(""),
+    reward_signup_days: str = Form(""),
+    reward_percent: str = Form(""),
+    referral_link: str = Form(""),
     note: str = Form(""),
     is_active: bool = Form(False),
     include_second_level: bool = Form(False),
@@ -303,10 +307,16 @@ def partner_edit(
     p = _partner(db, partner_id)
     try:
         p.telegram_id = _opt_int(telegram_id)
-        p.reward_days = _opt_int(reward_days, minimum=0)
+        p.reward_signup_days = _opt_int(reward_signup_days, minimum=0)
+        p.reward_percent = _opt_int(reward_percent, minimum=0)
     except ValueError:
-        flash(request, "Telegram ID и дни должны быть целыми неотрицательными числами", "error")
+        flash(request, "Telegram ID, дни и проценты должны быть целыми неотрицательными числами", "error")
         return _back(p.id)
+    link = referral_link.strip()
+    if link and not link.startswith(("https://", "http://", "tg://")):
+        flash(request, "Реферальная ссылка должна начинаться с https://", "error")
+        return _back(p.id)
+    p.referral_link = link[:255]
     p.name = name.strip()[:128] or p.login
     p.note = note.strip()[:2000]
     if p.is_active and not is_active:
@@ -476,7 +486,8 @@ def payout_delete(
 
 @router.get("/payouts")
 def payouts(request: Request, me: Account = Depends(require_admin), db: Session = Depends(get_db)):
-    rows = [{"partner": p, "balance": reward_balance(db, p)} for p in partners(db)]
+    defaults = default_rules(db)
+    rows = [{"partner": p, "balance": reward_balance(db, p, defaults)} for p in partners(db)]
     rows.sort(key=lambda r: r["balance"].due, reverse=True)
     log = list(
         db.scalars(
@@ -518,25 +529,27 @@ def settings_page(request: Request, me: Account = Depends(require_admin), db: Se
         request,
         "admin/settings.html",
         me,
-        default_days=default_reward_days(db),
+        rules=default_rules(db),
     )
 
 
 @router.post("/settings", dependencies=[Depends(verify_csrf)])
 def settings_save(
     request: Request,
-    reward_days: str = Form(...),
+    signup_days: str = Form(...),
+    percent: str = Form(...),
+    renewals: bool = Form(False),
     me: Account = Depends(require_admin),
     db: Session = Depends(get_db),
 ):
     try:
-        n = int(reward_days)
-        if n < 0 or n > 3650:
+        days, pct = int(signup_days), int(percent)
+        if not (0 <= days <= 3650 and 0 <= pct <= 1000):
             raise ValueError
     except ValueError:
-        flash(request, "Дни: целое число от 0 до 3650", "error")
+        flash(request, "Дни: от 0 до 3650, процент: от 0 до 1000", "error")
         return RedirectResponse("/admin/settings", 303)
-    set_setting(db, "reward_days", str(n))
+    save_default_rules(db, days, pct, renewals)
     db.commit()
     flash(request, "Настройки сохранены")
     return RedirectResponse("/admin/settings", 303)

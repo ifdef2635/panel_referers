@@ -223,7 +223,19 @@ def test_remnashop_sync_and_ui(app_client, token, tmp_path):
     assert "Источник добавлен" in r.text
 
     due = int(re.search(r'name="days" value="(\d+)"', r.text).group(1))
-    assert due > 0 and due % 3 == 0
+    # 1 day per attracted user + 50% of every purchased plan (defaults), straight from the bot DB
+    with psycopg.connect(RS_DSN) as conn:
+        attracted, plan_days = conn.execute(
+            """WITH s AS (
+                 SELECT u.id FROM users u LEFT JOIN referrals r ON r.referred_id = u.id
+                 LEFT JOIN ad_links a ON a.id = u.ad_link_id
+                 WHERE (r.referrer_id = 1 OR a.name = 'Блогер B') AND u.id <> 1)
+               SELECT (SELECT COUNT(*) FROM s),
+                      (SELECT COALESCE(SUM((t.plan_snapshot->>'duration')::int), 0) FROM transactions t
+                       WHERE t.user_id IN (SELECT id FROM s) AND t.status = 'COMPLETED' AND NOT t.is_test
+                         AND (t.pricing->>'final_amount')::numeric > 0)"""
+        ).fetchone()
+    assert plan_days > 0 and due == attracted + plan_days // 2
     r = c.post(f"/admin/partners/{pid}/payouts", data={"csrf": t, "days": "3", "note": "x"})
     assert "Записана выдача" in r.text and f'name="days" value="{due - 3}"' in r.text
     assert c.post(f"/admin/partners/{pid}/payouts", data={"csrf": "bad", "days": "3"}).status_code == 400
@@ -246,7 +258,9 @@ def test_remnashop_sync_and_ui(app_client, token, tmp_path):
     users = c.get("/p/users")
     assert users.status_code == 200 and not re.search(r"@user\d", users.text) and "Юзер" not in users.text
     rewards = c.get("/p/rewards")
-    assert "К выдаче" in rewards.text and str(due - 3) in rewards.text
+    from app.web import fmt_num
+
+    assert "К выдаче" in rewards.text and fmt_num(due - 3) in rewards.text
 
 
 @pytest.mark.skipif(not RS_DSN, reason="TEST_REMNASHOP_DSN is not set")

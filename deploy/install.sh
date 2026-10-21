@@ -17,6 +17,9 @@
 #   TIMEZONE=Europe/Moscow      timezone for daily statistics
 #   REMNASHOP_DSN=postgresql://user:pass@host:5432/db   bot database to pull data from (optional,
 #                               read-only access is enough; empty = only events via /api/ingest)
+#   BOT_TOKEN=123:ABC           Telegram bot for managing referrers (empty = no bot)
+#   BOT_ADMIN_IDS=111,222       Telegram IDs of the bot admins
+#   VPN_BOT_USERNAME=my_vpn_bot VPN bot whose referral links the bot hands out
 #   REPO_URL=https://github.com/...  BRANCH=main   clone from git instead of the script's directory
 #   ASSUME_YES=1                do not ask questions
 
@@ -30,6 +33,7 @@ ENV_FILE="$CONF_DIR/kago.env"
 TLS_DIR="$CONF_DIR/tls"
 ACME_DIR="/var/www/kago-acme"
 SERVICE="kago-analytics"
+BOT_SERVICE="kago-bot"
 APP_PORT="${APP_PORT:-8090}"
 DB_NAME="kago"
 DB_USER="kago"
@@ -83,6 +87,11 @@ if (( FIRST_INSTALL )); then
     ask TIMEZONE "Часовой пояс для статистики" "Europe/Moscow"
     ask ADMIN_LOGIN "Логин администратора" "admin"
     ask REMNASHOP_DSN "Строка подключения к БД бота (postgresql://user:pass@host:5432/db; пусто — только приём событий)" ""
+    ask BOT_TOKEN "Токен Telegram-бота для управления реферерами (пусто — без бота)" ""
+    if [[ -n "$BOT_TOKEN" ]]; then
+        ask BOT_ADMIN_IDS "Telegram ID администраторов бота (через запятую)" ""
+        ask VPN_BOT_USERNAME "Username VPN-бота, чьи реферальные ссылки выдавать (без @)" ""
+    fi
 else
     info "Найдена существующая установка — обновление (данные и настройки сохраняются)"
     DOMAIN="${DOMAIN:-$(env_get PANEL_DOMAIN)}"
@@ -90,6 +99,16 @@ else
 fi
 REMNASHOP_DSN="${REMNASHOP_DSN:-$(env_get REMNASHOP_DSN)}"
 [[ "$REMNASHOP_DSN" != *"'"* ]] || die "REMNASHOP_DSN не должен содержать одинарных кавычек"
+BOT_TOKEN="${BOT_TOKEN:-$(env_get BOT_TOKEN)}"
+BOT_ADMIN_IDS="${BOT_ADMIN_IDS:-$(env_get BOT_ADMIN_IDS)}"
+BOT_ADMIN_IDS="${BOT_ADMIN_IDS// /}"
+VPN_BOT_USERNAME="${VPN_BOT_USERNAME:-$(env_get VPN_BOT_USERNAME)}"
+VPN_BOT_USERNAME="${VPN_BOT_USERNAME#@}"
+REFERRAL_LINK_TEMPLATE="${REFERRAL_LINK_TEMPLATE:-$(env_get REFERRAL_LINK_TEMPLATE)}"
+[[ -z "$BOT_TOKEN" || "$BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || die "BOT_TOKEN не похож на токен Telegram-бота"
+[[ "$BOT_ADMIN_IDS" =~ ^[0-9,]*$ ]] || die "BOT_ADMIN_IDS: Telegram ID через запятую"
+[[ "$VPN_BOT_USERNAME" =~ ^[A-Za-z0-9_]*$ ]] || die "VPN_BOT_USERNAME: только латиница, цифры и _"
+[[ "$REFERRAL_LINK_TEMPLATE" != *"'"* ]] || die "REFERRAL_LINK_TEMPLATE не должен содержать одинарных кавычек"
 
 # --------------------------------------------------------------------------- packages
 
@@ -183,6 +202,11 @@ STATS_CACHE_SECONDS=$cache
 PANEL_DOMAIN=${DOMAIN:-}
 LE_EMAIL=${LE_EMAIL:-}
 REMNASHOP_DSN='$REMNASHOP_DSN'
+# Telegram bot (systemctl restart $BOT_SERVICE)
+BOT_TOKEN='$BOT_TOKEN'
+BOT_ADMIN_IDS=$BOT_ADMIN_IDS
+VPN_BOT_USERNAME=$VPN_BOT_USERNAME
+REFERRAL_LINK_TEMPLATE='$REFERRAL_LINK_TEMPLATE'
 EOF
     sed -i -e '/^[A-Z_]*=$/d' -e '/^[A-Z_]*=""$/d' -e "/^[A-Z_]*=''$/d" "$tmp"  # empty -> defaults
     chown root:"$APP_USER" "$tmp"; chmod 640 "$tmp"
@@ -244,6 +268,40 @@ ReadWritePaths=$DATA_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
+if [[ -n "$BOT_TOKEN" ]]; then
+    cat > "/etc/systemd/system/$BOT_SERVICE.service" <<EOF
+[Unit]
+Description=Kago Referrer Telegram bot
+After=network-online.target postgresql.service $SERVICE.service
+Wants=network-online.target postgresql.service
+
+[Service]
+User=$APP_USER
+Group=$APP_USER
+WorkingDirectory=$APP_DIR
+EnvironmentFile=$ENV_FILE
+ExecStart=$APP_DIR/venv/bin/python -m app.bot
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+elif [[ -f "/etc/systemd/system/$BOT_SERVICE.service" ]]; then
+    systemctl disable --now "$BOT_SERVICE" -q 2>/dev/null || true
+    rm -f "/etc/systemd/system/$BOT_SERVICE.service"
+fi
 systemctl daemon-reload
 systemctl enable "$SERVICE" -q
 systemctl restart "$SERVICE"
@@ -399,6 +457,19 @@ if ! curl -fsS "http://127.0.0.1:$APP_PORT/healthz" >/dev/null 2>&1; then
     die "Служба не отвечает, смотрите журнал выше"
 fi
 
+if [[ -n "$BOT_TOKEN" ]]; then
+    info "Telegram-бот"
+    systemctl enable "$BOT_SERVICE" -q
+    systemctl restart "$BOT_SERVICE"
+    sleep 3
+    if ! systemctl is-active -q "$BOT_SERVICE"; then
+        journalctl -u "$BOT_SERVICE" -n 20 --no-pager || true
+        warn "Бот не запустился, смотрите журнал выше (BOT_TOKEN в $ENV_FILE)"
+    fi
+    [[ -n "$BOT_ADMIN_IDS" ]] || warn "BOT_ADMIN_IDS пуст — в боте некому управлять реферерами"
+    [[ -n "$VPN_BOT_USERNAME" && -n "$REMNASHOP_DSN" ]] || warn "Без VPN_BOT_USERNAME и REMNASHOP_DSN бот не сможет сам получать реферальные ссылки — их придётся вводить вручную"
+fi
+
 if [[ -n "$REMNASHOP_DSN" ]]; then
     info "Проверка подключения к БД бота"
     kago check-bot-db || warn "БД бота недоступна или схема не подходит — панель покажет ошибку в «Интеграции». Исправьте REMNASHOP_DSN в $ENV_FILE и выполните: systemctl restart $SERVICE"
@@ -424,7 +495,7 @@ cat <<EOF
 
   Настройки:   $ENV_FILE
   Бэкапы БД:   $DATA_DIR/backups (ежедневно, 14 копий)
-  Логи:        journalctl -u $SERVICE -f
+  Логи:        journalctl -u $SERVICE -f${BOT_TOKEN:+   (бот: journalctl -u $BOT_SERVICE -f)}
   Обновление:  sudo bash $APP_DIR/deploy/install.sh
   Команды:     sudo kago list | create-admin LOGIN | set-password LOGIN | issue-token
                sudo kago check-bot-db | sync-bot-db [--full]

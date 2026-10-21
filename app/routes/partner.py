@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from .. import analytics as rs
 from ..db import get_db
 from ..models import Account
-from ..services import chart_payload, partner_scope, resolve_period, reward_balance
+from ..services import chart_payload, earned_in_period, partner_scope, resolve_period, reward_balance
 from ..web import render, require_partner
 
 router = APIRouter(prefix="/p")
@@ -22,6 +22,7 @@ def partner_dashboard_context(db: Session, partner: Account, request: Request) -
         "stats": rs.overview(scope, period.start, period.end),
         "chart": chart_payload(scope, period) if not scope.empty else None,
         "balance": reward_balance(db, partner),
+        "earned": earned_in_period(db, partner, period.start, period.end),
         "recent": rs.recent_payments(scope, 15),
         "geo": rs.geography(scope, period.start, period.end),
         "platforms": rs.platforms(scope),
