@@ -42,7 +42,7 @@ class Ref(CallbackData, prefix="r"):
 
 
 class Rule(CallbackData, prefix="g"):
-    act: str  # signup | percent | renewals | delivery | auto
+    act: str  # signup | percent | renewals
 
 
 class Input(StatesGroup):
@@ -137,8 +137,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         rows = await run(svc.list_referrers)
         rules = await run(svc.get_rules)
         data = await run(svc.data_status)
-        delivery = await run(svc.get_delivery)
-        await show(target, texts.menu(svc.totals(rows), rules, data, delivery), menu_kb())
+        await show(target, texts.menu(svc.totals(rows), rules, data), menu_kb())
 
     @r.message(CommandStart())
     @r.message(Command("menu"))
@@ -267,17 +266,8 @@ def build_admin_router(admin_ids: set[int]) -> Router:
     def card_kb(x: svc.Referrer) -> InlineKeyboardMarkup:
         pid, b = x.partner.id, x.balance
         kb = InlineKeyboardBuilder()
-        rows = []
         if b.due > 0:
             kb.button(text=f"🎁 Выдать {texts.days(b.due)}", callback_data=Ref(act="pay", id=pid, arg=b.due).pack())
-            rows.append(1)
-        for p in x.open_payouts:  # queued / stuck / failed payouts
-            if p.status in ("failed", "processing"):
-                kb.button(text=f"🔁 Повторить {p.days} дн.", callback_data=Ref(act="po_retry", id=pid, arg=p.id).pack())
-                kb.button(text="✅ Выдал вручную", callback_data=Ref(act="po_done", id=pid, arg=p.id).pack())
-                rows.append(2)
-            kb.button(text=f"✖️ Отменить выдачу {p.days} дн.", callback_data=Ref(act="po_cancel", id=pid, arg=p.id).pack())
-            rows.append(1)
         kb.button(text="✍️ Выдать другое кол-во", callback_data=Ref(act="pay_custom", id=pid).pack())
         kb.button(text="👥 Приглашённые", callback_data=Ref(act="invited", id=pid).pack())
         kb.button(text="📤 Отправить ссылку", callback_data=Ref(act="send_link", id=pid).pack())
@@ -291,7 +281,7 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         )
         kb.button(text="🗑 Удалить", callback_data=Ref(act="delete", id=pid).pack())
         kb.button(text="« К списку", callback_data=Nav(to="list").pack())
-        kb.adjust(*rows, 1, 2, 2, 2, 2, 2)
+        kb.adjust(*([1] if b.due > 0 else []), 1, 2, 2, 2, 2, 2)
         return kb.as_markup()
 
     async def card(target, partner_id: int, prefix: str = ""):
@@ -329,17 +319,9 @@ def build_admin_router(admin_ids: set[int]) -> Router:
 
     async def do_payout(target, bot: Bot, partner_id: int, days_n: int):
         try:
-            x, payout = await run(svc.add_payout, partner_id, days_n)
+            x = await run(svc.add_payout, partner_id, days_n)
         except svc.BotError as exc:
             await show(target, str(exc), to_card(partner_id))
-            return
-        if payout.status == "pending":
-            await card(
-                target,
-                partner_id,
-                f"⏳ Выдача {texts.days(days_n)} поставлена в очередь: kago-sync продлит подписку в "
-                "течение минуты, реферер получит уведомление.\n\n",
-            )
             return
         sent = await notify(bot, x.partner.telegram_id, texts.payout_message(days_n, x))
         info = "реферер уведомлён" if sent else "уведомить реферера не удалось — он ещё не запускал этого бота"
@@ -348,17 +330,6 @@ def build_admin_router(admin_ids: set[int]) -> Router:
     @r.callback_query(Ref.filter(F.act == "pay_ok"))
     async def cb_pay_ok(cb: CallbackQuery, callback_data: Ref, bot: Bot):
         await do_payout(cb, bot, callback_data.id, callback_data.arg)
-
-    @r.callback_query(Ref.filter(F.act.in_({"po_retry", "po_cancel", "po_done"})))
-    async def cb_payout_action(cb: CallbackQuery, callback_data: Ref):
-        action = callback_data.act.removeprefix("po_")
-        try:
-            await run(svc.payout_action, callback_data.arg, action)
-        except svc.BotError as exc:
-            await cb.answer(str(exc), show_alert=True)
-            return
-        done = {"retry": "🔁 Выдача снова в очереди.", "cancel": "✖️ Выдача отменена.", "done": "✅ Отмечено как выданное."}
-        await card(cb, callback_data.id, done[action] + "\n\n")
 
     @r.callback_query(Ref.filter(F.act == "pay_custom"))
     async def cb_pay_custom(cb: CallbackQuery, callback_data: Ref, state: FSMContext):
@@ -385,7 +356,6 @@ def build_admin_router(admin_ids: set[int]) -> Router:
         rows = await run(svc.last_payouts, callback_data.id, 10)
         lines = [
             f"{p.created_at.astimezone(get_settings().tz):%d.%m.%Y %H:%M} · <b>{p.days:+d}</b> · {escape(p.note or '—')}"
-            + ("" if p.status == "done" else f" · <i>{texts.PAYOUT_LABELS.get(p.status, p.status)}</i>")
             for p in rows
         ]
         await show(
@@ -541,7 +511,6 @@ def build_admin_router(admin_ids: set[int]) -> Router:
 
     async def rules_screen(target):
         rules = await run(svc.get_rules)
-        d = await run(svc.get_delivery)
         kb = InlineKeyboardBuilder()
         kb.button(text=f"За приглашённого: {texts.days(rules.signup_days)}", callback_data=Rule(act="signup").pack())
         kb.button(text=f"От срока покупки: {rules.percent}%", callback_data=Rule(act="percent").pack())
@@ -549,37 +518,15 @@ def build_admin_router(admin_ids: set[int]) -> Router:
             text="Продления: учитываются ✅" if rules.renewals else "Продления: не учитываются ❌",
             callback_data=Rule(act="renewals").pack(),
         )
-        kb.button(
-            text="Выдача: через kago-sync 🤖" if d.mode == "sync" else "Выдача: вручную ✋",
-            callback_data=Rule(act="delivery").pack(),
-        )
-        if d.mode == "sync":
-            kb.button(
-                text="Автовыдача начислений: вкл ✅" if d.auto else "Автовыдача начислений: выкл ❌",
-                callback_data=Rule(act="auto").pack(),
-            )
         kb.button(text="« Меню", callback_data=Nav(to="menu").pack())
         kb.adjust(1)
         await show(
             target,
             "<b>Правила начисления</b> (для всех, у кого нет индивидуальных ставок)\n\n"
-            f"{escape(texts.rules_line(rules))}.\n"
-            "Возврат платежа отменяет начисление. Изменение правил пересчитывает и уже начисленные дни.\n\n"
-            f"<b>{escape(texts.delivery_line(d))}</b>\n"
-            "<i>Вручную — вы продлеваете подписку сами и подтверждаете выдачу в боте.\n"
-            "Через kago-sync — скрипт на сервере VPN-бота сам продлевает подписку рефереру "
-            "(Remnawave + Remnashop) по кнопке «Выдать», а с автовыдачей — сразу по мере начисления.</i>",
+            f"{escape(texts.rules_line(rules))}.\n\n"
+            "Возврат платежа отменяет начисление. Изменение правил пересчитывает и уже начисленные дни.",
             kb.as_markup(),
         )
-
-    @r.callback_query(Rule.filter(F.act.in_({"delivery", "auto"})))
-    async def cb_delivery(cb: CallbackQuery, callback_data: Rule):
-        d = await run(svc.get_delivery)
-        if callback_data.act == "delivery":
-            await run(svc.set_delivery, "manual" if d.mode == "sync" else "sync", False)
-        else:
-            await run(svc.set_delivery, d.mode, not d.auto)
-        await rules_screen(cb)
 
     @r.callback_query(Nav.filter(F.to == "rules"))
     async def cb_rules(cb: CallbackQuery, state: FSMContext):
@@ -748,31 +695,14 @@ def setup(dp: Dispatcher, admin_ids: set[int]) -> None:
 # =========================================================================== notifications
 
 
-async def announce_payouts(bot: Bot, admin_ids: set[int]) -> None:
-    """Payouts kago-sync applied (to the referrer) or failed (to the admins)."""
-    for payout, partner, ref in await run(svc.take_announcements):
-        if ref is not None:
-            await notify(bot, partner.telegram_id, texts.applied_message(payout, ref))
-        else:
-            kb = to_card(partner.id)
-            for admin_id in admin_ids:
-                await notify(bot, admin_id, texts.failed_message(payout, partner.name), kb)
-        await asyncio.sleep(0.05)
-
-
-async def notify_loop(bot: Bot, interval: int, admin_ids: set[int]) -> None:
-    """Tell referrers about new invites and purchases (every `interval` s, 0 = off) and announce
-    payouts kago-sync applied or failed."""
+async def notify_loop(bot: Bot, interval: int) -> None:
+    """Tell referrers about new invites and purchases."""
     await asyncio.sleep(5)
-    rounds = 0
     while True:
         try:
-            await announce_payouts(bot, admin_ids)  # every 30 s: kago-sync applies payouts each minute
-            if interval and rounds % max(1, interval // 30) == 0:
-                for change in await run(svc.collect_changes):
-                    await notify(bot, change.telegram_id, texts.change_message(change))
-                    await asyncio.sleep(0.05)  # stay far below Telegram's rate limits
+            for change in await run(svc.collect_changes):
+                await notify(bot, change.telegram_id, texts.change_message(change))
+                await asyncio.sleep(0.05)  # stay far below Telegram's rate limits
         except Exception:
             log.exception("notification round failed")
-        rounds += 1
-        await asyncio.sleep(30)
+        await asyncio.sleep(interval)

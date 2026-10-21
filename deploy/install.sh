@@ -130,7 +130,7 @@ PUBLIC_URL="https://$HOST"
 
 info "PostgreSQL"
 systemctl enable --now postgresql -q 2>/dev/null || systemctl start postgresql
-for _ in $(seq 1 20); do (cd / && runuser -u postgres -- pg_isready -q) && break; sleep 1; done
+for _ in $(seq 1 20); do runuser -u postgres -- pg_isready -q && break; sleep 1; done
 
 DATABASE_URL="$(env_get DATABASE_URL)"
 if [[ -z "$DATABASE_URL" ]]; then

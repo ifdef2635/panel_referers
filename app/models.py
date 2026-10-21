@@ -98,22 +98,6 @@ class PartnerSource(Base):
     partner: Mapped[Account] = relationship(back_populates="sources")
 
 
-PAYOUT_DONE = "done"  # issued (by hand, or applied by kago-sync)
-PAYOUT_PENDING = "pending"  # queued for kago-sync
-PAYOUT_PROCESSING = "processing"  # taken by kago-sync, result not reported yet
-PAYOUT_FAILED = "failed"  # kago-sync could not apply it
-PAYOUT_CANCELLED = "cancelled"
-PAYOUT_LABELS = {
-    PAYOUT_DONE: "выдано",
-    PAYOUT_PENDING: "в очереди",
-    PAYOUT_PROCESSING: "выполняется",
-    PAYOUT_FAILED: "ошибка",
-    PAYOUT_CANCELLED: "отменено",
-}
-# Statuses that count as issued: queued payouts too, so the same days are never queued twice.
-PAYOUT_COUNTED = (PAYOUT_DONE, PAYOUT_PENDING, PAYOUT_PROCESSING)
-
-
 class Payout(Base):
     """Subscription days issued to a partner."""
 
@@ -123,13 +107,6 @@ class Payout(Base):
     partner_id: Mapped[int] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"), index=True)
     days: Mapped[int] = mapped_column(Integer)
     note: Mapped[str] = mapped_column(String(255), default="")
-    status: Mapped[str] = mapped_column(String(16), default=PAYOUT_DONE)
-    # Set by kago-sync: when the days were added in the VPN service and the new expiry date.
-    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    expire_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    error: Mapped[str] = mapped_column(Text, default="")
-    # When the bot told the referrer (applied) or the admins (failed).
-    notified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by_id: Mapped[int | None] = mapped_column(
         ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True
     )

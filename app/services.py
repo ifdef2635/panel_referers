@@ -9,7 +9,6 @@ from . import analytics as rs
 from .config import get_settings
 from .db import fetch_one
 from .models import (
-    PAYOUT_COUNTED,
     DEFAULT_PURCHASE_PERCENT,
     DEFAULT_SIGNUP_DAYS,
     ROLE_PARTNER,
@@ -129,11 +128,7 @@ def reward_balance(db: Session, partner: Account, defaults: RewardRules | None =
     rules = reward_rules(db, partner, defaults)
     base = rs.reward_base(partner_scope(partner), rules.renewals)
     issued = int(
-        db.scalar(
-            select(func.coalesce(func.sum(Payout.days), 0)).where(
-                Payout.partner_id == partner.id, Payout.status.in_(PAYOUT_COUNTED)
-            )
-        )
+        db.scalar(select(func.coalesce(func.sum(Payout.days), 0)).where(Payout.partner_id == partner.id))
     )
     signup = base["referrals"] * rules.signup_days
     purchase = rules.purchase_days(base["days"])

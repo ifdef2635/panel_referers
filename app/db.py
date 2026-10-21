@@ -23,11 +23,6 @@ MIGRATIONS = (
     "ALTER TABLE payments ADD COLUMN IF NOT EXISTS duration_days INTEGER",
     "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS invite_code VARCHAR(32)",
     "CREATE UNIQUE INDEX IF NOT EXISTS accounts_invite_code_key ON accounts (invite_code)",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS status VARCHAR(16) NOT NULL DEFAULT 'done'",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS expire_at TIMESTAMPTZ",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS error TEXT NOT NULL DEFAULT ''",
-    "ALTER TABLE payouts ADD COLUMN IF NOT EXISTS notified_at TIMESTAMPTZ",
 )
 
 

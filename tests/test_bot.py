@@ -236,21 +236,6 @@ def test_bot_referrer_flow(tg, app_client, token):  # noqa: F811
     assert svc.get_referrer(pid).balance.accrued == 2 + 15
     svc.update_rules(signup_days=1)
 
-    # ---- delivery through kago-sync: payouts are queued, can be cancelled
-    body, kb = press(ADMIN, "n:rules:0")
-    body, kb = press(ADMIN, button(kb, "Выдача: вручную"))
-    assert "Выдача: через kago-sync" in str(buttons(kb)) and "kago-sync не на связи" in body
-    body, kb = press(ADMIN, button(kb, "Автовыдача начислений: выкл"))
-    assert "Автовыдача начислений: вкл" in str(buttons(kb))
-    press(ADMIN, f"r:pay_custom:{pid}:0")
-    body, kb = text(ADMIN, "5")
-    assert "поставлена в очередь" in body and "Выдача 5 дней: в очереди" in body
-    body, kb = press(ADMIN, button(kb, "✖️ Отменить выдачу"))
-    assert "Выдача отменена" in body and "в очереди" not in body
-    body, kb = press(ADMIN, "n:rules:0")
-    press(ADMIN, button(kb, "Выдача: через kago-sync"))
-    assert svc.get_delivery().mode == "manual"
-
     # ---- the referrer's own screen and the web panel
     body, _ = text(REFERRER, "/start")
     assert start in body and "Зарегистрировались в VPN: <b>1</b>" in body

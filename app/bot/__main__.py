@@ -56,8 +56,9 @@ async def main() -> int:
     me = await bot.get_me()
     await asyncio.to_thread(svc.set_bot_username, me.username)  # referrer links point to this bot
     log.warning("bot @%s started, admins: %s", me.username, sorted(s.admin_ids))
-    interval = max(60, s.bot_notify_seconds) if s.bot_notify_seconds > 0 else 0
-    tasks = [asyncio.create_task(notify_loop(bot, interval, s.admin_ids))]
+    tasks = []
+    if s.bot_notify_seconds > 0:
+        tasks.append(asyncio.create_task(notify_loop(bot, max(60, s.bot_notify_seconds))))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
